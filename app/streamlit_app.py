@@ -1,25 +1,25 @@
 """
-Walkability route explorer — Streamlit UI.
+Footpath — walkability-aware walking routes for Boston (Streamlit UI).
 
 Run with:
     streamlit run app/streamlit_app.py
 
-Pick an origin and destination (by address, lat/lon, or by clicking the map),
-tune the distance/walkability tradeoff (alpha) and the per-factor weights, and
-the app shows walkability-ranked walking routes coloured by per-edge score.
+Enter an origin and destination by address, choose how far you'll go for a
+better walk (the `alpha` slider), and optionally fine-tune the per-factor
+weights. Routes are scored block by block and ranked; each route card can be
+expanded for the specifics (confidence, weakest stretch).
 
-The enriched graph is loaded once per session (`@st.cache_resource`) — the full
-Boston graph is ~10 s on first load, then instant. Routing clips to a local
-ellipse, so nearby trips stay fast even on the full graph.
+Design: a warm editorial look (parchment + terracotta) with a left control rail
+and a full-height map. The graph loads once per session (`@st.cache_resource`).
 """
 
 from __future__ import annotations
 
-import streamlit as st
-
-# --- Make the `walkability` package importable when run via `streamlit run` ---
 import sys
+from collections import defaultdict
 from pathlib import Path
+
+import streamlit as st
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -34,29 +34,113 @@ from walkability.graph.build import (
     dev_region_path,
     load_graph,
 )
-from walkability.routing.cost import ALPHA_DEFAULT
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
 
-st.set_page_config(page_title="Boston Walkability Routes", page_icon="🚶", layout="wide")
+st.set_page_config(page_title="Footpath — Boston walk router", page_icon="🚶", layout="wide")
 
-# Distinct colours for the ranked candidate routes (best → worst).
-_ROUTE_COLORS = ["#1f77b4", "#9467bd", "#111111", "#17becf", "#e377c2"]
+# Palette (mirrors the Footpath design direction).
+ACCENT = "#b1592e"
+INK = "#211e18"
+WALK_SPEED_MPS = 1.33  # ~average pedestrian pace, for walk-time estimates
 
 
 # ---------------------------------------------------------------------------
-# Graph loading (cached once per session, keyed by path)
+# Styling
+# ---------------------------------------------------------------------------
+
+def inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+        :root { --ink:#211e18; --muted:#5c564a; --faint:#8a8270; --line:#ece5d5; --accent:#b1592e; }
+
+        /* Base type + background */
+        html, body, [class*="css"], [data-testid="stAppViewContainer"] {
+            font-family: 'Public Sans', system-ui, sans-serif;
+            color: var(--ink);
+        }
+        [data-testid="stAppViewContainer"] { background: #faf8f2; }
+        h1, h2, h3 { font-family: 'Spectral', Georgia, serif; letter-spacing: -0.01em; }
+
+        /* Hide default Streamlit chrome for a cleaner app shell */
+        header[data-testid="stHeader"] { background: transparent; height: 0; }
+        #MainMenu, footer { visibility: hidden; }
+        [data-testid="stToolbar"] { display: none; }
+        [data-testid="stMainBlockContainer"] { padding-top: 1.6rem; }
+
+        /* Left rail */
+        section[data-testid="stSidebar"] { width: 446px !important; background: #f6f1e6; border-right: 1px solid var(--line); }
+        section[data-testid="stSidebar"] > div { padding-top: 1.3rem; }
+
+        /* Mono labels */
+        .fp-eyebrow { font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:0.18em; color:#a8a08c; display:flex; align-items:center; gap:9px; margin-bottom:12px; }
+        .fp-eyebrow span.rule { display:inline-block; width:18px; height:1px; background:#cabfa6; }
+        .fp-title { font-family:'Spectral',serif; font-weight:600; font-size:40px; line-height:1; margin:0 0 12px; }
+        .fp-desc { font-size:14px; line-height:1.6; color:var(--muted); max-width:36ch; margin:0 0 6px; }
+        .fp-mono { font-family:'IBM Plex Mono',monospace; font-size:10.5px; text-transform:uppercase; letter-spacing:0.14em; color:#a8a08c; }
+
+        /* Text inputs */
+        [data-testid="stTextInput"] input {
+            font-family:'Public Sans',sans-serif; font-size:14.5px; border-radius:11px;
+            border:1px solid #e6dfce; background:#fff; padding:11px 13px;
+        }
+        [data-testid="stTextInput"] input:focus { border-color: var(--accent); box-shadow:none; }
+
+        /* Find button (only st.button in the app) */
+        .stButton > button {
+            width:100%; border:none; border-radius:13px; background:var(--accent); color:#fdfbf6;
+            font-family:'Public Sans',sans-serif; font-weight:600; font-size:15px; padding:13px 15px;
+            box-shadow:0 4px 14px rgba(177,89,46,.32); transition:filter .15s;
+        }
+        .stButton > button:hover { filter:brightness(1.05); color:#fff; }
+        .stButton > button:focus { color:#fff; }
+
+        /* Expander as a quiet "fine-tune" panel */
+        [data-testid="stExpander"] { border:1px solid #e6dfce; border-radius:13px; background:#fffdf8; }
+        [data-testid="stExpander"] summary { font-weight:600; font-size:13.5px; color:var(--muted); }
+
+        /* Route cards */
+        .fp-card { border:1px solid #e6dfce; background:#fffdf8; border-radius:16px; padding:16px 17px 15px; margin-bottom:2px; }
+        .fp-card.best { border-color:var(--accent); background:#fdf3ec; }
+        .fp-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:13px; }
+        .fp-card-name { font-family:'Spectral',serif; font-size:18px; font-weight:600; line-height:1.15; }
+        .fp-card-via { font-size:12.5px; color:var(--faint); margin-top:2px; }
+        .fp-badge { flex-shrink:0; font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; color:var(--accent); background:#f6e3d8; padding:5px 9px; border-radius:8px; white-space:nowrap; }
+        .fp-score-row { display:flex; align-items:flex-end; gap:8px; margin-bottom:9px; }
+        .fp-score { font-family:'Spectral',serif; font-size:38px; font-weight:600; line-height:0.82; }
+        .fp-score-100 { font-size:13px; color:#a8a08c; margin-bottom:3px; }
+        .fp-score-tag { font-size:10.5px; color:var(--faint); margin-bottom:4px; margin-left:auto; text-transform:uppercase; letter-spacing:0.05em; font-family:'IBM Plex Mono',monospace; }
+        .fp-bar { height:6px; border-radius:999px; background:#ece5d5; overflow:hidden; margin-bottom:14px; }
+        .fp-bar-fill { height:100%; border-radius:999px; }
+        .fp-meta { display:flex; gap:24px; }
+        .fp-meta b { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:500; color:#2b271f; }
+        .fp-meta .lbl { font-size:10.5px; color:#a8a08c; text-transform:uppercase; letter-spacing:0.06em; margin-top:1px; }
+        .fp-hair { height:1px; background:var(--line); margin:10px 0 18px; }
+
+        /* The map fills the main area; don't let it spawn a page scrollbar */
+        [data-testid="stMain"] { overflow: hidden; }
+        [data-testid="stMain"]::-webkit-scrollbar { width:0; height:0; }
+        .fp-card:not(.best) { cursor: default; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data + geometry helpers
 # ---------------------------------------------------------------------------
 
 @st.cache_resource(show_spinner="Loading the walk graph (one-time, ~10 s for full Boston)…")
 def get_graph(path_str: str):
-    """Load and cache an enriched GraphML graph by path."""
     return load_graph(Path(path_str))
 
 
-def _graph_center(G) -> tuple[float, float]:
-    """Rough (lat, lon) centre of the graph's nodes (memoised on the graph)."""
+def _graph_center(G):
     cached = G.graph.get("_center")
     if cached is None:
         ys = [d["y"] for _, d in G.nodes(data=True)]
@@ -66,106 +150,25 @@ def _graph_center(G) -> tuple[float, float]:
     return cached
 
 
-# ---------------------------------------------------------------------------
-# Geometry / rendering helpers (small inlines so we don't import notebooks/)
-# ---------------------------------------------------------------------------
-
 def _edge_coords(G, u, v, key):
-    """(lat, lon) vertices of an edge — its geometry if present, else endpoints."""
     geom = G[u][v][key].get("geometry")
     if geom is not None:
-        return [(lat, lon) for lon, lat in geom.coords]  # shapely is (lon, lat)
+        return [(lat, lon) for lon, lat in geom.coords]
     return [(G.nodes[u]["y"], G.nodes[u]["x"]), (G.nodes[v]["y"], G.nodes[v]["x"])]
 
 
-def _walk_color(walk: float) -> str:
-    """Red (bad) → green (good) hex for a walk_score in [0, 1]."""
-    return f"#{int(255 * (1 - walk)):02x}{int(255 * walk):02x}00"
-
-
-def build_map(G, orig, dest, routes, weights, frame=True, zoom=14):
-    """A folium map with current O/D markers and any returned routes.
-
-    `frame` controls whether the camera is fitted to the current points/route.
-    Set it True only when the map is being remounted on purpose (after a search /
-    clear / region switch via the changing component key). The declared
-    `location` is kept constant (graph centre) so a click never moves the camera —
-    st_folium holds the user's current pan/zoom; re-framing happens only on a
-    deliberate remount, where fit_bounds frames the route.
-    """
-    center = _graph_center(G)
-    fmap = folium.Map(
-        location=center, zoom_start=zoom, tiles="cartodbpositron",
-        # Smooth zoom: zoom_snap=0 lets the map sit at any fractional zoom (no
-        # clunky staircase), wheel_px_per_zoom_level=80 keeps one flick gentle.
-        zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=80,
-    )
-
-    # Draw routes worst→best so the best route ends up on top.
-    for idx in range(len(routes) - 1, -1, -1):
-        route = routes[idx]
-        if idx == 0:
-            # Best route: colour each edge by its own walk_score with tooltips.
-            for i, (u, v, key) in enumerate(route.edges):
-                d = G[u][v][key]
-                walk, conf = edge_walkability(d, weights)
-                tip = (
-                    f"edge {i}: walk={walk:.2f} (conf {conf:.2f})<br>"
-                    f"highway: {_as_str(d.get('highway')) or '—'}<br>"
-                    f"foot_access: {_as_str(d.get('foot_access')) or '—'}<br>"
-                    f"length: {_as_float(d.get('length')) or 0:.0f} m"
-                )
-                folium.PolyLine(
-                    _edge_coords(G, u, v, key), color=_walk_color(walk),
-                    weight=7, opacity=0.9, tooltip=tip,
-                ).add_to(fmap)
-        else:
-            # Alternative routes: a single thin grey-ish line.
-            coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in route.nodes]
-            folium.PolyLine(
-                coords, color=_ROUTE_COLORS[idx % len(_ROUTE_COLORS)],
-                weight=3, opacity=0.5,
-                tooltip=f"alternative #{idx}: walk={route.walk_score:.2f}",
-            ).add_to(fmap)
-
-    if orig is not None:
-        folium.Marker(orig, icon=folium.Icon(color="green"), tooltip="origin").add_to(fmap)
-    if dest is not None:
-        folium.Marker(dest, icon=folium.Icon(color="red"), tooltip="destination").add_to(fmap)
-
-    # Fit the camera only on a deliberate remount (frame=True). On click reruns
-    # frame=False, so fit_bounds is never emitted and the user's view is kept.
-    if frame:
-        if routes:
-            lats, lons = [], []
-            for u, v, key in routes[0].edges:
-                cs = _edge_coords(G, u, v, key)
-                lats += [c[0] for c in cs]
-                lons += [c[1] for c in cs]
-            fmap.fit_bounds([(min(lats), min(lons)), (max(lats), max(lons))], padding=(30, 30))
-        elif orig is not None and dest is not None:
-            fmap.fit_bounds([orig, dest], padding=(40, 40))
-
-    return fmap
-
-
-# Nominatim, scoped to a generous Boston-area bounding box. Bounding the search
-# narrows candidates (faster + more accurate) and the box is wide enough to cover
-# Boston proper plus nearby Cambridge/Brookline/East Boston.
+# Nominatim, scoped to a Boston-area bounding box; cached so repeats are instant.
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_BOSTON_VIEWBOX = "-71.20,42.43,-70.98,42.22"  # lon_min,lat_max,lon_max,lat_min
+_BOSTON_VIEWBOX = "-71.20,42.43,-70.98,42.22"
 _GEO_HEADERS = {"User-Agent": "walkability-route-app/0.1 (educational project)"}
 
 
 @st.cache_data(show_spinner=False)
-def _nominatim_boston(q: str) -> tuple[float, float]:
-    """Boston-bounded Nominatim lookup. Cached; raises on no result (so misses
-    aren't cached and can be retried)."""
+def _nominatim_boston(q: str):
     import requests
 
-    base = {"q": q, "format": "json", "limit": 1,
-            "countrycodes": "us", "viewbox": _BOSTON_VIEWBOX}
-    for bounded in (1, 0):  # strict box first, then the box only as a soft bias
+    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": _BOSTON_VIEWBOX}
+    for bounded in (1, 0):
         resp = requests.get(_NOMINATIM_URL, params={**base, "bounded": bounded},
                             headers=_GEO_HEADERS, timeout=8)
         resp.raise_for_status()
@@ -176,7 +179,6 @@ def _nominatim_boston(q: str) -> tuple[float, float]:
 
 
 def geocode(query: str):
-    """Geocode a free-text place to (lat, lon), scoped to Boston. None on failure."""
     q = query.strip()
     if not q:
         return None
@@ -185,7 +187,6 @@ def geocode(query: str):
     try:
         return _nominatim_boston(q)
     except Exception:
-        # Last-ditch fallback: osmnx's own (unbounded) Nominatim geocoder.
         try:
             import osmnx as ox
             lat, lon = ox.geocode(q)
@@ -195,196 +196,314 @@ def geocode(query: str):
 
 
 # ---------------------------------------------------------------------------
+# Presentation helpers
+# ---------------------------------------------------------------------------
+
+def score_hex(s01: float) -> str:
+    """Red → amber → green hex for a walk score in [0, 1]."""
+    s = s01 * 100
+    if s >= 80:
+        return "#3f8f5f"
+    if s >= 65:
+        return "#789b3e"
+    if s >= 50:
+        return "#c8922f"
+    return "#c0512f"
+
+
+def dist_str(m: float) -> str:
+    return f"{m / 1000:.1f} km" if m >= 1000 else f"{round(m / 10) * 10:.0f} m"
+
+
+def time_str(m: float) -> str:
+    return f"{max(1, round(m / WALK_SPEED_MPS / 60))} min"
+
+
+def alpha_word(slider: int) -> str:
+    return ("Shortest path" if slider < 15 else "Lean shorter" if slider < 35
+            else "Balanced" if slider < 58 else "Lean walkable" if slider < 82 else "Best walk")
+
+
+_FACTOR_LABELS = {
+    "road_type": "street type", "surface_quality": "surface condition",
+    "surface_material": "surface material", "foot_access": "foot access",
+}
+
+
+def route_details(G, route, weights):
+    """Weakest block (lowest-scoring edge) + the route's dominant street name."""
+    worst_walk, worst_hwy = 1.0, None
+    street_len: dict[str, float] = defaultdict(float)
+    for u, v, key in route.edges:
+        d = G[u][v][key]
+        w, _ = edge_walkability(d, weights)
+        if w < worst_walk:
+            worst_walk, worst_hwy = w, _as_str(d.get("highway"))
+        name = d.get("name")
+        if isinstance(name, list):
+            name = name[0] if name else None
+        name = _as_str(name)
+        if name:
+            street_len[name] += float(d.get("length") or 0.0)
+    dominant = max(street_len, key=street_len.get) if street_len else None
+    return worst_walk, (worst_hwy or "path"), dominant
+
+
+# ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
 
-st.session_state.setdefault("orig", None)
-st.session_state.setdefault("dest", None)
 st.session_state.setdefault("routes", [])
-st.session_state.setdefault("last_click", None)
-st.session_state.setdefault("searched", False)   # has a route search been run for the current points?
-st.session_state.setdefault("view_token", 0)     # bumping it remounts the map → re-frames the view
-st.session_state.setdefault("framed_token", -1)  # last view_token we actually fitted the camera for
+st.session_state.setdefault("focus", 0)            # index of route emphasised on the map
+st.session_state.setdefault("committed", None)     # params behind the shown routes
+st.session_state.setdefault("active_weights", FACTOR_WEIGHTS)  # weights the shown routes/colours use
+st.session_state.setdefault("view_token", 0)       # bump to re-frame the map
 st.session_state.setdefault("region", None)
+st.session_state.setdefault("error", None)
 
-
-def _reframe():
-    """Force the map to remount and re-fit its view on the next render."""
-    st.session_state.view_token += 1
-
-
-def _run_search(G, o, d, alpha, weights):
-    """Run routing for one O/D pair and update result state."""
-    st.session_state.orig, st.session_state.dest = o, d
-    st.session_state.routes = find_routes(G, o, d, alpha=alpha, weights=weights)
-    st.session_state.searched = True
-    _reframe()  # frame the new result once
-
-
-def _clear_points():
-    st.session_state.orig = st.session_state.dest = None
-    st.session_state.routes = []
-    st.session_state.last_click = None
-    st.session_state.searched = False
-    _reframe()
+inject_css()
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: graph + routing controls
+# Left rail
 # ---------------------------------------------------------------------------
 
-st.sidebar.header("Graph")
-_region_labels = {"full": "Full Boston (~10 s load)"}
-_region_labels.update({r: f"Dev: {r} (fast)" for r in DEV_REGIONS})
-region = st.sidebar.selectbox(
-    "Area", list(_region_labels), format_func=_region_labels.get,
-    help="Full Boston works for any address. Dev regions load instantly and are great for quick demos.",
-)
+with st.sidebar:
+    st.markdown(
+        '<div class="fp-eyebrow"><span class="rule"></span>Walk router · Boston</div>'
+        '<div class="fp-title">Footpath</div>'
+        '<p class="fp-desc">Walking routes scored block by block on street type, surface and '
+        'foot access — not just the shortest line. Choose how far you’ll go for a better walk.</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="fp-hair"></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="fp-mono">Trip</div>', unsafe_allow_html=True)
+    o_addr = st.text_input("From", value="Massachusetts State House", label_visibility="collapsed",
+                           placeholder="From — e.g. Massachusetts State House")
+    d_addr = st.text_input("To", value="Boston Public Garden", label_visibility="collapsed",
+                           placeholder="To — e.g. Boston Public Garden")
+
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 1])
+    c1.markdown('<div class="fp-mono">How you\'ll walk</div>', unsafe_allow_html=True)
+    alpha_slider = st.slider("How you'll walk", 0, 100, 40, label_visibility="collapsed",
+                             help="Left = shortest route. Right = detour further for a better walk.")
+    c2.markdown(
+        f'<div style="text-align:right; font-family:Spectral,serif; font-style:italic; '
+        f'font-size:16px; color:{ACCENT};">{alpha_word(alpha_slider)}</div>',
+        unsafe_allow_html=True,
+    )
+    sc1, sc2 = st.columns([1, 1])
+    sc1.markdown('<span style="font-size:11.5px;color:#a8a08c;">Shortest way</span>', unsafe_allow_html=True)
+    sc2.markdown('<div style="text-align:right;"><span style="font-size:11.5px;color:#a8a08c;">Best walk</span></div>', unsafe_allow_html=True)
+
+    alpha = round(alpha_slider / 100 * 5, 2)  # 0 → shortest path; ~5 → strong walkability pull
+
+    with st.expander("Fine-tune what matters"):
+        w_road = st.slider("Street type", 0.0, 10.0, FACTOR_WEIGHTS["road_type"], 0.5)
+        w_surf = st.slider("Surface condition", 0.0, 10.0, FACTOR_WEIGHTS["surface_quality"], 0.5)
+        w_mat = st.slider("Surface material", 0.0, 10.0, FACTOR_WEIGHTS["surface_material"], 0.5)
+        w_foot = st.slider("Foot access", 0.0, 10.0, FACTOR_WEIGHTS["foot_access"], 0.5)
+
+    _custom = {"road_type": w_road, "surface_quality": w_surf,
+               "surface_material": w_mat, "foot_access": w_foot}
+    weights = FACTOR_WEIGHTS if _custom == FACTOR_WEIGHTS else _custom
+
+    params = {"o": o_addr.strip(), "d": d_addr.strip(), "alpha": alpha, "w": dict(_custom)}
+    pending = st.session_state.committed is not None and params != st.session_state.committed
+    if pending:
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:9px;margin:6px 0 10px;padding:10px 13px;'
+            'border-radius:11px;background:#f7e9e0;border:1px solid #e7c9b6;">'
+            '<div style="width:6px;height:6px;border-radius:50%;background:#b1592e;"></div>'
+            '<span style="font-size:12.5px;color:#5c564a;">Priorities changed — find again to recompute.</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    find = st.button("Update routes" if pending else "Find routes", type="primary")
+
+    with st.expander("Map area"):
+        _region_labels = {"full": "Full Boston"}
+        _region_labels.update({r: r.replace("_", " ").title() for r in DEV_REGIONS})
+        region = st.selectbox("Area", list(_region_labels), format_func=_region_labels.get,
+                              label_visibility="collapsed")
+
 graph_path = str(ENRICHED_PATH if region == "full" else dev_region_path(region))
-if st.session_state.region != region:           # switching graphs: old points/view no longer apply
+if st.session_state.region != region:
     st.session_state.region = region
-    _clear_points()
-
-st.sidebar.header("Routing")
-alpha = st.sidebar.slider(
-    "Walkability vs. distance (alpha)", 0.0, 6.0, float(ALPHA_DEFAULT), 0.5,
-    help="0 = shortest path. Higher = detour further toward walkable streets.",
-)
-
-st.sidebar.subheader("Factor weights")
-st.sidebar.caption("Relative importance of each signal in the walkability score.")
-w_road = st.sidebar.slider("Road type", 0.0, 10.0, FACTOR_WEIGHTS["road_type"], 0.5)
-w_surf = st.sidebar.slider("Surface quality", 0.0, 10.0, FACTOR_WEIGHTS["surface_quality"], 0.5)
-w_mat = st.sidebar.slider("Surface material", 0.0, 10.0, FACTOR_WEIGHTS["surface_material"], 0.5)
-w_foot = st.sidebar.slider("Foot access", 0.0, 10.0, FACTOR_WEIGHTS["foot_access"], 0.5)
-
-_custom = {
-    "road_type": w_road, "surface_quality": w_surf,
-    "surface_material": w_mat, "foot_access": w_foot,
-}
-# Pass the FACTOR_WEIGHTS object itself when untouched, to keep the baked fast path.
-weights = FACTOR_WEIGHTS if _custom == FACTOR_WEIGHTS else _custom
-
-
-# ---------------------------------------------------------------------------
-# Main: title + input
-# ---------------------------------------------------------------------------
-
-st.title("🚶 Boston Walkability Routes")
-st.caption(
-    "Routes are ranked by walkability. A single bad block drags the whole route's "
-    "score down (worst-segment penalty), and a forced customers-only endpoint "
-    "(e.g. a zoo entrance) isn't penalised."
-)
+    st.session_state.routes = []
+    st.session_state.committed = None
+    st.session_state.error = None
 
 G = get_graph(graph_path)
 
-mode = st.radio(
-    "Set origin & destination by", ["Address", "Latitude / Longitude", "Click on map"],
-    horizontal=True,
-)
-
-# Process a pending map click BEFORE the buttons are drawn, so "Find routes"
-# reflects the point just placed (otherwise the button lags a click behind).
-# st_folium stores its return in session_state under its key, so the latest
-# click is already available here at the top of the click-triggered rerun.
-map_key = f"route_map_{st.session_state.view_token}"
-if mode == "Click on map":
-    lc = (st.session_state.get(map_key) or {}).get("last_clicked")
-    if lc:
-        pt = (lc["lat"], lc["lng"])
-        if pt != st.session_state.last_click:          # a genuinely new click
-            st.session_state.last_click = pt
-            if st.session_state.orig is None:
-                st.session_state.orig = pt
-                st.session_state.routes = []
-                st.session_state.searched = False
-            elif st.session_state.dest is None:
-                st.session_state.dest = pt
-                st.session_state.routes = []
-                st.session_state.searched = False
-            # both already set → ignore further clicks (use "Clear points")
-
-if mode == "Address":
-    c1, c2 = st.columns(2)
-    o_addr = c1.text_input("Origin address", placeholder="e.g. Massachusetts State House")
-    d_addr = c2.text_input("Destination address", placeholder="e.g. Charles/MGH Station")
-    if st.button("Find routes", type="primary"):
-        o = geocode(o_addr)
-        d = geocode(d_addr)
-        if o is None:
-            st.error(f"Couldn't geocode origin: “{o_addr}”. Try a more specific address.")
-        elif d is None:
-            st.error(f"Couldn't geocode destination: “{d_addr}”. Try a more specific address.")
-        else:
-            _run_search(G, o, d, alpha, weights)
-
-elif mode == "Latitude / Longitude":
-    c1, c2 = st.columns(2)
-    o_lat = c1.number_input("Origin lat", value=42.3588, format="%.6f")
-    o_lon = c1.number_input("Origin lon", value=-71.0707, format="%.6f")
-    d_lat = c2.number_input("Destination lat", value=42.3601, format="%.6f")
-    d_lon = c2.number_input("Destination lon", value=-71.0656, format="%.6f")
-    if st.button("Find routes", type="primary"):
-        _run_search(G, (o_lat, o_lon), (d_lat, d_lon), alpha, weights)
-
-else:  # Click on map
-    st.info(
-        "Click the map: first click sets the **origin**, second the **destination**. "
-        "Then press **Find routes**. Use **Clear points** to start over."
-    )
-    cc1, cc2, _ = st.columns([1, 1, 2])
-    if cc1.button("Find routes", type="primary",
-                  disabled=not (st.session_state.orig and st.session_state.dest)):
-        _run_search(G, st.session_state.orig, st.session_state.dest, alpha, weights)
-    if cc2.button("Clear points"):
-        _clear_points()
-
 
 # ---------------------------------------------------------------------------
-# Results summary
+# Run a search
 # ---------------------------------------------------------------------------
+
+if find:
+    st.session_state.error = None
+    o = geocode(o_addr)
+    d = geocode(d_addr)
+    if o is None:
+        st.session_state.error = f"Couldn't find “{o_addr}”. Try a more specific address."
+    elif d is None:
+        st.session_state.error = f"Couldn't find “{d_addr}”. Try a more specific address."
+    else:
+        st.session_state.routes = find_routes(G, o, d, alpha=alpha, weights=weights)
+        st.session_state.committed = params
+        st.session_state.active_weights = weights  # freeze rendering to the committed weights
+        st.session_state.focus = 0
+        st.session_state.view_token += 1  # re-frame the map to the new result
 
 routes = st.session_state.routes
-if routes:
-    best = routes[0]
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Best walk score", f"{best.walk_score:.2f}")
-    m2.metric("Length", f"{best.total_length:.0f} m")
-    m3.metric("Confidence", f"{best.confidence:.2f}")
-    st.dataframe(
-        [
-            {
-                "rank": i,
-                "walk_score": round(r.walk_score, 3),
-                "confidence": round(r.confidence, 3),
-                "length_m": round(r.total_length),
-                "hops": len(r.edges),
-            }
-            for i, r in enumerate(routes)
-        ],
-        hide_index=True, width="stretch",
-    )
-elif st.session_state.searched and st.session_state.orig and st.session_state.dest:
-    st.warning(
-        "No walkable route found between these points. Some destinations are only "
-        "reachable via foot-prohibited (`foot=no`) edges and correctly return no route."
-    )
 
 
 # ---------------------------------------------------------------------------
-# Map (renders markers + routes; captures clicks in click mode)
+# Route cards (left rail, below controls)
 # ---------------------------------------------------------------------------
 
-# The map key only changes when we deliberately re-frame (after a search / clear
-# / region switch). While it's stable, st_folium keeps the user's pan/zoom and
-# does NOT rerun on pan/zoom — only a click changes `last_clicked` and reruns,
-# which is why limiting `returned_objects` to last_clicked stops the page from
-# jumping to the top every time you scroll-zoom. We fit the camera (frame=True)
-# only on the first render after such a re-frame, never on a click.
-frame = st.session_state.framed_token != st.session_state.view_token
-st.session_state.framed_token = st.session_state.view_token
+with st.sidebar:
+    st.markdown('<div class="fp-hair" style="margin:22px 0 0;"></div>', unsafe_allow_html=True)
+    head_l, head_r = st.columns([2, 1])
+    head_l.markdown('<h2 style="font-size:23px;font-weight:600;margin:14px 0 2px;">Your routes</h2>',
+                    unsafe_allow_html=True)
+    head_r.markdown(
+        f'<div style="text-align:right;font-family:IBM Plex Mono,monospace;font-size:11px;'
+        f'color:#a8a08c;margin-top:20px;">{len(routes)} found</div>', unsafe_allow_html=True)
 
-fmap = build_map(G, st.session_state.orig, st.session_state.dest, routes, weights, frame=frame)
-st_folium(fmap, key=map_key, height=560, use_container_width=True,
-          returned_objects=["last_clicked"])
+    if st.session_state.error:
+        st.warning(st.session_state.error)
+    elif not routes:
+        st.markdown('<p style="font-size:13px;color:#8a8270;">Enter a trip and press '
+                    '<b>Find routes</b>.</p>', unsafe_allow_html=True)
+    else:
+        best_score = max(r.walk_score for r in routes)
+        shortest = min(r.total_length for r in routes)
+        st.markdown(
+            f'<p style="margin:2px 0 16px;font-size:12.5px;color:#8a8270;line-height:1.5;">'
+            f'Best walk scores {round(best_score * 100)}/100 · shortest is {dist_str(shortest)}. '
+            f'Sorted by your priorities.</p>', unsafe_allow_html=True)
+
+        rweights = st.session_state.active_weights  # render with committed weights, not live sliders
+        st.session_state.focus = min(st.session_state.focus, len(routes) - 1)
+        details = [route_details(G, r, rweights) for r in routes]
+
+        for i, (r, (worst_walk, worst_hwy, dominant)) in enumerate(zip(routes, details)):
+            sc = r.walk_score
+            col = score_hex(sc)
+            via = f"via {dominant}" if dominant else f"{len(r.edges)} blocks"
+            badge = '<span class="fp-badge">Best fit</span>' if i == 0 else ''
+            focused = " best" if i == st.session_state.focus else ""
+            st.markdown(
+                f'<div class="fp-card{focused}">'
+                f'  <div class="fp-card-head"><div style="min-width:0;">'
+                f'    <div class="fp-card-name">{"Recommended" if i == 0 else f"Alternative {i}"}</div>'
+                f'    <div class="fp-card-via">{via}</div></div>{badge}</div>'
+                f'  <div class="fp-score-row"><span class="fp-score" style="color:{col};">{round(sc*100)}</span>'
+                f'    <span class="fp-score-100">/ 100</span><span class="fp-score-tag">Walk score</span></div>'
+                f'  <div class="fp-bar"><div class="fp-bar-fill" style="width:{max(4, round(sc*100))}%;background:{col};"></div></div>'
+                f'  <div class="fp-meta">'
+                f'    <div><b>{dist_str(r.total_length)}</b><div class="lbl">Distance</div></div>'
+                f'    <div><b>{time_str(r.total_length)}</b><div class="lbl">Walk time</div></div>'
+                f'  </div></div>',
+                unsafe_allow_html=True,
+            )
+            if i != st.session_state.focus:
+                if st.button("Show on map", key=f"focus_{i}", use_container_width=True):
+                    st.session_state.focus = i
+                    st.rerun()
+            else:
+                st.markdown(
+                    '<div style="font-family:IBM Plex Mono,monospace;font-size:10.5px;'
+                    'letter-spacing:0.1em;text-transform:uppercase;color:#b1592e;'
+                    'padding:4px 0 2px;">● Showing on map</div>', unsafe_allow_html=True)
+            with st.expander("Details"):
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;font-size:12.5px;'
+                    f'color:#5c564a;padding:3px 0;">'
+                    f'<span>Confidence in this scoring</span>'
+                    f'<b style="font-family:IBM Plex Mono,monospace;color:#2b271f;">{round(r.confidence*100)} / 100</b></div>'
+                    f'<div style="display:flex;justify-content:space-between;font-size:12.5px;'
+                    f'color:#5c564a;padding:3px 0;">'
+                    f'<span>Weakest stretch — {worst_hwy}</span>'
+                    f'<b style="font-family:IBM Plex Mono,monospace;color:{score_hex(worst_walk)};">{round(worst_walk*100)} / 100</b></div>'
+                    f'<div style="display:flex;justify-content:space-between;font-size:12.5px;'
+                    f'color:#5c564a;padding:3px 0;">'
+                    f'<span>Segments</span>'
+                    f'<b style="font-family:IBM Plex Mono,monospace;color:#2b271f;">{len(r.edges)}</b></div>',
+                    unsafe_allow_html=True,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Map (main area)
+# ---------------------------------------------------------------------------
+
+def build_map(G, routes, focus, weights):
+    center = _graph_center(G)
+    fmap = folium.Map(location=center, zoom_start=14, tiles=None, zoom_control=True,
+                      zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=50)
+    folium.TileLayer(
+        "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",
+        attr="© OpenStreetMap, © CARTO", subdomains="abcd", max_zoom=20, control=False,
+    ).add_to(fmap)
+    folium.TileLayer(
+        "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png",
+        attr="© CARTO", subdomains="abcd", max_zoom=20, control=False,
+    ).add_to(fmap)
+
+    if not routes:
+        return fmap
+
+    # Alternatives first (faint), focused route last + on top, coloured per block.
+    order = [i for i in range(len(routes)) if i != focus] + [focus]
+    all_pts = []
+    for i in order:
+        r = routes[i]
+        if i != focus:
+            coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in r.nodes]
+            all_pts += coords
+            folium.PolyLine(coords, color=score_hex(r.walk_score), weight=4,
+                            opacity=0.4, line_cap="round").add_to(fmap)
+        else:
+            for u, v, key in r.edges:
+                cs = _edge_coords(G, u, v, key)
+                all_pts += cs
+                w, conf = edge_walkability(G[u][v][key], weights)
+                folium.PolyLine(cs, color="#faf8f2", weight=10, opacity=1, line_cap="round").add_to(fmap)
+                folium.PolyLine(
+                    cs, color=score_hex(w), weight=6, opacity=1, line_cap="round",
+                    tooltip=f"walk {round(w*100)}/100 · {_as_str(G[u][v][key].get('highway')) or 'path'}",
+                ).add_to(fmap)
+
+    focal = routes[focus]
+    o = (G.nodes[focal.nodes[0]]["y"], G.nodes[focal.nodes[0]]["x"])
+    d = (G.nodes[focal.nodes[-1]]["y"], G.nodes[focal.nodes[-1]]["x"])
+    folium.CircleMarker(o, radius=7, color="#faf8f2", weight=3, fill_color=ACCENT,
+                        fill_opacity=1, tooltip="Start").add_to(fmap)
+    folium.CircleMarker(d, radius=7, color="#faf8f2", weight=3, fill_color=INK,
+                        fill_opacity=1, tooltip="Destination").add_to(fmap)
+    if all_pts:
+        lats = [p[0] for p in all_pts]
+        lons = [p[1] for p in all_pts]
+        fmap.fit_bounds([(min(lats), min(lons)), (max(lats), max(lons))], padding=(60, 60))
+    return fmap
+
+
+st.markdown(
+    '<div style="display:flex;gap:18px;align-items:center;margin:0 0 8px;'
+    'font-family:IBM Plex Mono,monospace;font-size:11px;color:#5c564a;">'
+    '<span style="text-transform:uppercase;letter-spacing:0.12em;color:#a8a08c;">Walk score by block</span>'
+    '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#3f8f5f;vertical-align:middle;"></span> 80+</span>'
+    '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c8922f;vertical-align:middle;"></span> 50–79</span>'
+    '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c0512f;vertical-align:middle;"></span> under 50</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights)
+st_folium(fmap, key=f"map_{st.session_state.view_token}", height=660,
+          use_container_width=True, returned_objects=[])

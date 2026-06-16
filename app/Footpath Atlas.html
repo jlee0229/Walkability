@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Footpath — Boston walk router</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; font-family: 'Public Sans', system-ui, sans-serif; color: #211e18; background: #faf8f2; }
+  .leaflet-container { font-family: 'Public Sans', system-ui, sans-serif !important; background: #ece6d8 !important; }
+  .leaflet-control-zoom a { border: none !important; color: #44403a !important; font-weight: 500; background: #fbf9f3 !important; }
+  .leaflet-bar { border: 1px solid #e2dccb !important; box-shadow: 0 6px 18px rgba(50,42,28,.12) !important; border-radius: 12px !important; overflow: hidden; }
+  input[type=range] { width: 100%; height: 5px; cursor: pointer; accent-color: #b1592e; }
+  input[type=text] { font-family: inherit; }
+  ::-webkit-scrollbar { width: 11px; }
+  ::-webkit-scrollbar-thumb { background: #e2dccb; border-radius: 999px; border: 3px solid #faf8f2; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  @keyframes atl-spin { to { transform: rotate(360deg); } }
+  @keyframes atl-rise { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+  .app { display: flex; height: 100vh; width: 100%; overflow: hidden; }
+  .sidebar { width: 436px; flex-shrink: 0; height: 100%; display: flex; flex-direction: column; border-right: 1px solid #ece5d5; background: #faf8f2; z-index: 2; }
+  .scroll { flex: 1; overflow-y: auto; padding: 30px 30px 34px; }
+  .eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.18em; color: #a8a08c; }
+  .label-mono { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em; color: #a8a08c; }
+  .hairline { height: 1px; background: #ece5d5; }
+  .route-card { border: 1px solid #e6dfce; background: #fffdf8; border-radius: 16px; padding: 17px 17px 16px; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; }
+  .route-card.sel { border-color: #b1592e; background: color-mix(in oklab, #b1592e 6%, #fff); box-shadow: 0 6px 18px color-mix(in oklab, #b1592e 14%, transparent); }
+  .find-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 15px; border: none; border-radius: 13px; background: #b1592e; color: #fdfbf6; font-family: inherit; font-size: 15px; font-weight: 600; letter-spacing: 0.01em; cursor: pointer; box-shadow: 0 4px 14px color-mix(in oklab, #b1592e 32%, transparent); }
+  .spin { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; display: inline-block; animation: atl-spin .7s linear infinite; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="scroll">
+
+      <header style="margin-bottom:28px;">
+        <div class="eyebrow" style="margin-bottom:14px; display:flex; align-items:center; gap:9px;">
+          <span style="display:inline-block; width:18px; height:1px; background:#cabfa6;"></span>Walk router · Boston
+        </div>
+        <h1 style="font-family:'Spectral',Georgia,serif; font-weight:600; font-size:42px; line-height:0.98; letter-spacing:-0.015em; margin:0 0 14px;">Footpath</h1>
+        <p style="margin:0; font-size:14.5px; line-height:1.6; color:#5c564a; text-wrap:pretty; max-width:34ch;">Walking routes scored block by block on street type, surface and foot access — not just the shortest line. Choose how far you’ll go for a better walk.</p>
+      </header>
+
+      <div class="hairline" style="margin-bottom:24px;"></div>
+
+      <section style="margin-bottom:26px;">
+        <div class="label-mono" style="margin-bottom:12px;">Trip</div>
+        <div style="border:1px solid #e6dfce; border-radius:13px; background:#fff; overflow:hidden;">
+          <label style="display:flex; align-items:center; gap:11px; padding:12px 15px;">
+            <div style="width:9px; height:9px; border-radius:50%; background:#b1592e; flex-shrink:0;"></div>
+            <div style="flex:1; min-width:0;">
+              <div class="label-mono" style="font-size:9.5px; letter-spacing:0.1em; margin-bottom:1px;">From</div>
+              <input id="origin" type="text" value="Massachusetts State House" style="border:none; outline:none; width:100%; font-size:14.5px; color:#211e18; background:transparent; padding:0;">
+            </div>
+          </label>
+          <div style="height:1px; background:#efe9da; margin:0 15px;"></div>
+          <label style="display:flex; align-items:center; gap:11px; padding:12px 15px;">
+            <div style="width:9px; height:9px; border-radius:2px; background:#211e18; flex-shrink:0;"></div>
+            <div style="flex:1; min-width:0;">
+              <div class="label-mono" style="font-size:9.5px; letter-spacing:0.1em; margin-bottom:1px;">To</div>
+              <input id="dest" type="text" value="Public Garden · Charles St" style="border:none; outline:none; width:100%; font-size:14.5px; color:#211e18; background:transparent; padding:0;">
+            </div>
+          </label>
+        </div>
+      </section>
+
+      <section style="margin-bottom:22px;">
+        <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px;">
+          <span class="label-mono">How you'll walk</span>
+          <span id="alphaLabel" style="font-family:'Spectral',serif; font-size:16px; font-style:italic; color:#b1592e;">Balanced</span>
+        </div>
+        <input id="alpha" type="range" min="0" max="100" value="60">
+        <div style="display:flex; justify-content:space-between; margin-top:9px;">
+          <span style="font-size:11.5px; color:#a8a08c;">Shortest way</span>
+          <span style="font-size:11.5px; color:#a8a08c;">Best walk</span>
+        </div>
+      </section>
+
+      <section style="margin-bottom:24px;">
+        <button id="advToggle" style="display:flex; align-items:center; gap:8px; width:100%; background:none; border:none; padding:8px 0; cursor:pointer; font-family:inherit; color:#5c564a; text-align:left;">
+          <span style="font-size:13.5px; font-weight:600;">Fine-tune what matters</span>
+          <span id="advPlus" style="font-family:'IBM Plex Mono',monospace; font-size:18px; line-height:0; color:#a8a08c; transition:transform .2s;">+</span>
+          <span id="advLabel" style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:#bcb39c; margin-left:auto;">4 factors</span>
+        </button>
+        <div id="weights" style="display:none; flex-direction:column; gap:17px; padding:16px 0 4px;"></div>
+      </section>
+
+      <div id="pending" style="display:none; align-items:center; gap:9px; margin-bottom:11px; padding:10px 13px; border-radius:11px; background:color-mix(in oklab, #b1592e 9%, #faf8f2); border:1px solid color-mix(in oklab, #b1592e 24%, #faf8f2);">
+        <div style="width:6px; height:6px; border-radius:50%; background:#b1592e; flex-shrink:0;"></div>
+        <span style="font-size:12.5px; color:#5c564a;">Priorities changed — find again to recompute.</span>
+      </div>
+
+      <button id="findBtn" class="find-btn"><span id="findLabel">Find routes</span></button>
+
+      <div class="hairline" style="margin:30px 0 0;"></div>
+
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin:24px 0 4px;">
+        <h2 style="font-family:'Spectral',serif; font-weight:600; font-size:23px; letter-spacing:-0.01em; margin:0;">Your routes</h2>
+        <span id="routeCount" class="eyebrow" style="font-size:11px; letter-spacing:normal; text-transform:none;">3 found</span>
+      </div>
+      <p id="summary" style="margin:0 0 18px; font-size:12.5px; color:#8a8270; line-height:1.5;"></p>
+
+      <div id="routes" style="display:flex; flex-direction:column; gap:13px;"></div>
+
+    </div>
+  </aside>
+
+  <main style="position:relative; flex:1; height:100%; background:#ece6d8;">
+    <div id="map" style="position:absolute; inset:0;"></div>
+
+    <div id="selCard" style="display:none; position:absolute; top:20px; left:20px; z-index:500; background:rgba(250,248,242,0.95); backdrop-filter:blur(10px); border:1px solid #e6dfce; border-radius:15px; padding:16px 20px; box-shadow:0 8px 28px rgba(50,42,28,.14);"></div>
+
+    <div style="position:absolute; bottom:20px; left:20px; z-index:500; background:rgba(250,248,242,0.95); backdrop-filter:blur(10px); border:1px solid #e6dfce; border-radius:13px; padding:12px 15px; box-shadow:0 6px 20px rgba(50,42,28,.12);">
+      <div class="label-mono" style="font-size:9.5px; letter-spacing:0.12em; margin-bottom:9px;">Walk score by block</div>
+      <div style="display:flex; gap:15px;">
+        <div style="display:flex; align-items:center; gap:6px;"><div style="width:18px; height:4px; border-radius:2px; background:oklch(0.58 0.13 150);"></div><span style="font-size:11px; color:#5c564a;">80+</span></div>
+        <div style="display:flex; align-items:center; gap:6px;"><div style="width:18px; height:4px; border-radius:2px; background:oklch(0.72 0.13 75);"></div><span style="font-size:11px; color:#5c564a;">50–79</span></div>
+        <div style="display:flex; align-items:center; gap:6px;"><div style="width:18px; height:4px; border-radius:2px; background:oklch(0.58 0.16 35);"></div><span style="font-size:11px; color:#5c564a;">under 50</span></div>
+      </div>
+    </div>
+
+    <div id="loading" style="display:none; position:absolute; inset:0; z-index:600; align-items:center; justify-content:center; background:rgba(236,230,216,0.5); backdrop-filter:blur(2px);">
+      <div style="display:flex; align-items:center; gap:12px; background:#faf8f2; padding:15px 22px; border-radius:14px; box-shadow:0 10px 34px rgba(50,42,28,.2);">
+        <span style="width:17px; height:17px; border:2.5px solid #e2dccb; border-top-color:#b1592e; border-radius:50%; display:inline-block; animation:atl-spin .7s linear infinite;"></span>
+        <span style="font-size:14px; font-weight:500; color:#3f3a30;">Reading the streets…</span>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<script>
+const ACCENT = '#b1592e';
+
+// ---- State ----------------------------------------------------------------
+const state = {
+  alpha: 60,
+  weights: { roadType: 90, surfaceQuality: 60, surfaceMaterial: 55, footAccess: 45 },
+  showAdvanced: false,
+  routes: [],
+  selectedRouteId: null,
+  committed: null,
+  isLoading: false,
+};
+
+const WEIGHT_KEYS = [
+  ['roadType', 'Street type'],
+  ['surfaceQuality', 'Surface condition'],
+  ['surfaceMaterial', 'Surface material'],
+  ['footAccess', 'Foot access'],
+];
+
+// Mock route data (Beacon Hill → Public Garden). In Streamlit these come from find_routes().
+function baseRoutes() {
+  return [
+    { id: 'a', name: 'Common Greenway', via: 'via Boston Common', confidence: 88,
+      factors: { roadType: 90, surfaceQuality: 78, surfaceMaterial: 74, footAccess: 96 },
+      coords: [[42.35876,-71.06377],[42.35790,-71.06480],[42.35690,-71.06560],[42.35590,-71.06700],[42.35490,-71.06850],[42.35402,-71.07018]] },
+    { id: 'b', name: 'Beacon Street', via: 'via Beacon St', confidence: 82,
+      factors: { roadType: 48, surfaceQuality: 80, surfaceMaterial: 85, footAccess: 66 },
+      coords: [[42.35876,-71.06377],[42.35820,-71.06520],[42.35730,-71.06720],[42.35600,-71.06880],[42.35402,-71.07018]] },
+    { id: 'c', name: 'Charles & Chestnut', via: 'via Charles St', confidence: 79,
+      factors: { roadType: 70, surfaceQuality: 72, surfaceMaterial: 70, footAccess: 84 },
+      coords: [[42.35876,-71.06377],[42.35850,-71.06450],[42.35760,-71.06560],[42.35650,-71.06640],[42.35540,-71.06800],[42.35460,-71.06930],[42.35402,-71.07018]] },
+  ];
+}
+
+// ---- Helpers --------------------------------------------------------------
+function hav(a, b) {
+  const R = 6371000, toR = Math.PI / 180;
+  const dLat = (b[0]-a[0])*toR, dLng = (b[1]-a[1])*toR;
+  const la1 = a[0]*toR, la2 = b[0]*toR;
+  const h = Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function len(c) { let d = 0; for (let i = 1; i < c.length; i++) d += hav(c[i-1], c[i]); return d; }
+function factorLabel(k) {
+  return { roadType: 'street type', surfaceQuality: 'surface condition', surfaceMaterial: 'surface material', footAccess: 'foot access' }[k];
+}
+function scoreColor(s) {
+  if (s >= 80) return 'oklch(0.56 0.13 150)';
+  if (s >= 65) return 'oklch(0.6 0.12 120)';
+  if (s >= 50) return 'oklch(0.7 0.13 75)';
+  return 'oklch(0.57 0.16 35)';
+}
+function distStr(m) { return m >= 1000 ? (m/1000).toFixed(1) + ' km' : Math.round(m/10)*10 + ' m'; }
+function alphaLabel(a) {
+  if (a < 18) return 'Shortest path';
+  if (a < 42) return 'Lean shorter';
+  if (a < 62) return 'Balanced';
+  if (a < 82) return 'Lean walkable';
+  return 'Best walk';
+}
+
+// Recompute routes for the given params, sorted by cost (mirrors routing.router).
+function buildRoutes(params) {
+  const { alpha, weights } = params;
+  const wsum = (weights.roadType + weights.surfaceQuality + weights.surfaceMaterial + weights.footAccess) || 1;
+  const af = alpha / 100;
+  const rs = baseRoutes().map(r => {
+    const comp = (r.factors.roadType*weights.roadType + r.factors.surfaceQuality*weights.surfaceQuality
+      + r.factors.surfaceMaterial*weights.surfaceMaterial + r.factors.footAccess*weights.footAccess) / wsum;
+    const dist = len(r.coords);
+    const time = dist / 1.33 / 60;
+    const cost = dist * (1 + af * 2 * (1 - comp/100));
+    let wk = null;
+    Object.keys(r.factors).forEach(k => { if (wk === null || r.factors[k] < r.factors[wk]) wk = k; });
+    const score = Math.round(comp);
+    return {
+      id: r.id, name: r.name, via: r.via, coords: r.coords,
+      score, scoreColor: scoreColor(score), scorePct: Math.max(4, score) + '%',
+      dist, distStr: distStr(dist), timeStr: Math.max(1, Math.round(time)) + ' min',
+      confStr: r.confidence + ' / 100',
+      worstLabel: factorLabel(wk), worstScore: r.factors[wk] + ' / 100', worstColor: scoreColor(r.factors[wk]),
+      _cost: cost,
+    };
+  });
+  rs.sort((a, b) => a._cost - b._cost);
+  rs.forEach((r, i) => { r.isRecommended = i === 0; });
+  return rs;
+}
+
+function currentParams() { return { alpha: state.alpha, weights: { ...state.weights } }; }
+function isPending() { return state.committed && JSON.stringify(currentParams()) !== JSON.stringify(state.committed); }
+
+// ---- Rendering ------------------------------------------------------------
+const $ = id => document.getElementById(id);
+
+function renderWeights() {
+  $('weights').innerHTML = WEIGHT_KEYS.map(([k, label]) => `
+    <div>
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px;">
+        <span style="font-size:13.5px; color:#3f3a30;">${label}</span>
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a8270;">${state.weights[k]}</span>
+      </div>
+      <input type="range" min="0" max="100" value="${state.weights[k]}" data-weight="${k}">
+    </div>`).join('');
+  $('weights').querySelectorAll('input[data-weight]').forEach(inp => {
+    inp.addEventListener('input', e => {
+      state.weights[e.target.dataset.weight] = +e.target.value;
+      renderWeights();
+      renderControls();
+    });
+  });
+}
+
+function renderControls() {
+  $('alphaLabel').textContent = alphaLabel(state.alpha);
+  $('advPlus').style.transform = state.showAdvanced ? 'rotate(45deg)' : 'rotate(0deg)';
+  $('advLabel').textContent = state.showAdvanced ? 'Hide' : '4 factors';
+  $('weights').style.display = state.showAdvanced ? 'flex' : 'none';
+  $('pending').style.display = isPending() && !state.isLoading ? 'flex' : 'none';
+  $('loading').style.display = state.isLoading ? 'flex' : 'none';
+  const lbl = state.isLoading ? 'Finding…' : (isPending() ? 'Update routes' : 'Find routes');
+  $('findBtn').innerHTML = (state.isLoading ? '<span class="spin"></span>' : '') + `<span id="findLabel">${lbl}</span>`;
+}
+
+function renderRoutes() {
+  $('routeCount').textContent = state.routes.length + ' found';
+  if (state.routes.length) {
+    const best = state.routes.reduce((a, b) => b.score > a.score ? b : a);
+    const shortest = state.routes.reduce((a, b) => b.dist < a.dist ? b : a);
+    $('summary').textContent = `Best walk scores ${best.score}/100 · shortest is ${shortest.distStr}. Sorted by your priorities.`;
+  }
+  $('routes').innerHTML = state.routes.map(r => {
+    const sel = r.id === state.selectedRouteId;
+    const inner = sel ? 'color-mix(in oklab, ' + ACCENT + ' 20%, #e6dfce)' : '#efe9da';
+    const detail = sel ? `
+      <div style="margin-top:15px; padding-top:14px; border-top:1px solid ${inner}; display:flex; flex-direction:column; gap:11px; animation:atl-rise .2s ease;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:12px; color:#8a8270;">Confidence in this scoring</span>
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#2b271f; margin-left:auto;">${r.confStr}</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="width:7px; height:7px; border-radius:50%; background:${r.worstColor}; flex-shrink:0;"></div>
+          <span style="font-size:12px; color:#8a8270;">Weakest stretch — ${r.worstLabel}</span>
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:#2b271f; margin-left:auto;">${r.worstScore}</span>
+        </div>
+      </div>` : '';
+    const badge = r.isRecommended ? `<span style="flex-shrink:0; font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; color:${ACCENT}; background:color-mix(in oklab, ${ACCENT} 12%, #fff); padding:5px 9px; border-radius:8px; white-space:nowrap;">Best fit</span>` : '';
+    return `
+    <div class="route-card${sel ? ' sel' : ''}" data-route="${r.id}">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:15px;">
+        <div style="min-width:0;">
+          <div style="font-family:'Spectral',serif; font-size:18px; font-weight:600; letter-spacing:-0.01em; line-height:1.15;">${r.name}</div>
+          <div style="font-size:12.5px; color:#8a8270; margin-top:3px;">${r.via}</div>
+        </div>
+        ${badge}
+      </div>
+      <div style="display:flex; align-items:flex-end; gap:9px; margin-bottom:9px;">
+        <span style="font-family:'Spectral',serif; font-size:38px; font-weight:600; line-height:0.82; color:${r.scoreColor};">${r.score}</span>
+        <span style="font-size:13px; color:#a8a08c; margin-bottom:3px;">/ 100</span>
+        <span style="font-size:11.5px; color:#8a8270; margin-bottom:4px; margin-left:auto; text-transform:uppercase; letter-spacing:0.05em; font-family:'IBM Plex Mono',monospace;">Walk score</span>
+      </div>
+      <div style="height:6px; border-radius:999px; background:#ece5d5; overflow:hidden; margin-bottom:15px;">
+        <div style="height:100%; width:${r.scorePct}; background:${r.scoreColor}; border-radius:999px; transition:width .3s;"></div>
+      </div>
+      <div style="display:flex; gap:22px;">
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:500; color:#2b271f;">${r.distStr}</div>
+          <div style="font-size:10.5px; color:#a8a08c; text-transform:uppercase; letter-spacing:0.06em; margin-top:1px;">Distance</div>
+        </div>
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:500; color:#2b271f;">${r.timeStr}</div>
+          <div style="font-size:10.5px; color:#a8a08c; text-transform:uppercase; letter-spacing:0.06em; margin-top:1px;">Walk time</div>
+        </div>
+      </div>
+      ${detail}
+    </div>`;
+  }).join('');
+  $('routes').querySelectorAll('.route-card').forEach(card => {
+    card.addEventListener('click', () => selectRoute(card.dataset.route));
+  });
+}
+
+function renderSelectedCard() {
+  const r = state.routes.find(x => x.id === state.selectedRouteId);
+  const el = $('selCard');
+  if (!r) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  const stat = (val, lbl, mono) => `
+    <div>
+      <div style="font-family:${mono ? "'IBM Plex Mono',monospace" : "'Spectral',serif"}; font-size:${mono ? '21px' : '24px'}; font-weight:600; color:${mono ? '#2b271f' : r.scoreColor}; line-height:1.1; white-space:nowrap;">${val}</div>
+      <div style="font-size:10px; color:#a8a08c; text-transform:uppercase; letter-spacing:0.06em; margin-top:4px; white-space:nowrap;">${lbl}</div>
+    </div>`;
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:9px; margin-bottom:13px;">
+      <div style="width:9px; height:9px; border-radius:50%; background:${r.scoreColor};"></div>
+      <span style="font-family:'Spectral',serif; font-size:17px; font-weight:600; letter-spacing:-0.01em; white-space:nowrap;">${r.name}</span>
+    </div>
+    <div style="display:flex; gap:26px;">
+      ${stat(r.score, 'Walk score', false)}
+      ${stat(r.distStr, 'Distance', true)}
+      ${stat(r.timeStr, 'Walk time', true)}
+    </div>`;
+}
+
+function render() {
+  renderControls();
+  renderRoutes();
+  renderSelectedCard();
+}
+
+// ---- Map ------------------------------------------------------------------
+let map, layerGroup;
+function initMap() {
+  map = L.map('map', { zoomControl: false, attributionControl: false, zoomSnap: 0, zoomDelta: 0.5 }).setView([42.3565, -71.0668], 15);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd' }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd', pane: 'shadowPane' }).addTo(map);
+  layerGroup = L.layerGroup().addTo(map);
+}
+
+function drawRoutes(fit) {
+  if (!map || !layerGroup) return;
+  layerGroup.clearLayers();
+  if (!state.routes.length) return;
+  const all = [];
+  const ordered = [...state.routes].sort((a, b) => (a.id === state.selectedRouteId ? 1 : 0) - (b.id === state.selectedRouteId ? 1 : 0));
+  ordered.forEach(r => {
+    const sel = r.id === state.selectedRouteId;
+    r.coords.forEach(c => all.push(c));
+    L.polyline(r.coords, { color: '#000', opacity: 0, weight: 20 }).on('click', () => selectRoute(r.id)).addTo(layerGroup);
+    if (sel) {
+      L.polyline(r.coords, { color: '#faf8f2', weight: 11, opacity: 1, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+      L.polyline(r.coords, { color: r.scoreColor, weight: 6.5, opacity: 1, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+    } else {
+      L.polyline(r.coords, { color: r.scoreColor, weight: 4, opacity: 0.42, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+    }
+  });
+  const o = state.routes[0].coords[0], d = state.routes[0].coords[state.routes[0].coords.length - 1];
+  L.circleMarker(o, { radius: 7, color: '#faf8f2', weight: 3, fillColor: ACCENT, fillOpacity: 1 }).addTo(layerGroup);
+  L.circleMarker(d, { radius: 7, color: '#faf8f2', weight: 3, fillColor: '#211e18', fillOpacity: 1 }).addTo(layerGroup);
+  if (fit) map.fitBounds(L.latLngBounds(all), { paddingTopLeft: [80, 80], paddingBottomRight: [70, 100] });
+}
+
+// ---- Actions --------------------------------------------------------------
+function selectRoute(id) {
+  state.selectedRouteId = id;
+  renderRoutes();
+  renderSelectedCard();
+  drawRoutes(false);
+}
+
+function findRoutes() {
+  if (state.isLoading) return;
+  state.isLoading = true;
+  renderControls();
+  setTimeout(() => {
+    const p = currentParams();
+    state.routes = buildRoutes(p);
+    state.committed = p;
+    state.selectedRouteId = state.routes[0].id;
+    state.isLoading = false;
+    render();
+    drawRoutes(true);
+  }, 650);
+}
+
+// ---- Wire up --------------------------------------------------------------
+$('alpha').addEventListener('input', e => { state.alpha = +e.target.value; renderControls(); });
+$('advToggle').addEventListener('click', () => { state.showAdvanced = !state.showAdvanced; renderControls(); });
+$('findBtn').addEventListener('click', findRoutes);
+
+// Initial compute (committed, so no pending nudge on load)
+const initParams = currentParams();
+state.routes = buildRoutes(initParams);
+state.committed = initParams;
+state.selectedRouteId = state.routes[0].id;
+
+renderWeights();
+render();
+initMap();
+drawRoutes(true);
+</script>
+</body>
+</html>
