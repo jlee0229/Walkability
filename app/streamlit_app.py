@@ -73,9 +73,11 @@ def inject_css() -> None:
         [data-testid="stToolbar"] { display: none; }
         [data-testid="stMainBlockContainer"] { padding-top: 1.0rem; }
 
-        /* Left rail — fixed width, so hide the drag-to-resize grip */
-        section[data-testid="stSidebar"] { width: 446px !important; background: #f6f1e6; border-right: 1px solid var(--line); }
+        /* Left rail — fixed width and non-collapsible: hide the resize grip AND
+           the collapse/expand control so the horizontal dimensions never change. */
+        section[data-testid="stSidebar"] { width: 446px !important; min-width: 446px !important; background: #f6f1e6; border-right: 1px solid var(--line); }
         [data-testid="stSidebarResizeHandle"], [data-testid="stSidebarResizer"] { display: none !important; }
+        [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display: none !important; }
         section[data-testid="stSidebar"] > div { padding-top: 1.3rem; }
 
         /* Mono labels */
@@ -479,7 +481,7 @@ with st.sidebar:
 # Map (main area)
 # ---------------------------------------------------------------------------
 
-def build_map(G, routes, focus, weights):
+def build_map(G, routes, focus, weights, segmented):
     center = _graph_center(G)
     fmap = folium.Map(location=center, zoom_start=14, tiles=None, zoom_control=True,
                       zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=55)
@@ -495,7 +497,9 @@ def build_map(G, routes, focus, weights):
     if not routes:
         return fmap
 
-    # Alternatives first (faint), focused route last + on top, coloured per block.
+    # Alternatives first (faint), focused route last + on top. The focused route
+    # is a single smooth line by default; only "Show segments" (segmented=True)
+    # breaks it into per-block coloured pieces.
     order = [i for i in range(len(routes)) if i != focus] + [focus]
     all_pts = []
     for i in order:
@@ -506,14 +510,25 @@ def build_map(G, routes, focus, weights):
             folium.PolyLine(coords, color=score_hex(r.walk_score), weight=4,
                             opacity=0.4, line_cap="round").add_to(fmap)
         else:
+            full = []
             for u, v, key in r.edges:
-                cs = _edge_coords(G, u, v, key)
-                all_pts += cs
-                w, conf = edge_walkability(G[u][v][key], weights)
-                folium.PolyLine(cs, color="#faf8f2", weight=10, opacity=1, line_cap="round").add_to(fmap)
+                full += _edge_coords(G, u, v, key)
+            all_pts += full
+            folium.PolyLine(full, color="#faf8f2", weight=10, opacity=1,
+                            line_cap="round", line_join="round").add_to(fmap)  # halo
+            if segmented:
+                for u, v, key in r.edges:
+                    cs = _edge_coords(G, u, v, key)
+                    w, _ = edge_walkability(G[u][v][key], weights)
+                    folium.PolyLine(
+                        cs, color=score_hex(w), weight=6, opacity=1, line_cap="round",
+                        tooltip=f"walk {round(w*100)}/100 · {_as_str(G[u][v][key].get('highway')) or 'path'}",
+                    ).add_to(fmap)
+            else:
                 folium.PolyLine(
-                    cs, color=score_hex(w), weight=6, opacity=1, line_cap="round",
-                    tooltip=f"walk {round(w*100)}/100 · {_as_str(G[u][v][key].get('highway')) or 'path'}",
+                    full, color=score_hex(r.walk_score), weight=6, opacity=1,
+                    line_cap="round", line_join="round",
+                    tooltip=f"Walk score {round(r.walk_score*100)}/100",
                 ).add_to(fmap)
 
     focal = routes[focus]
@@ -541,6 +556,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights)
+_segmented = st.session_state.get(f"seg_{st.session_state.focus}", False)
+fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights, _segmented)
 st_folium(fmap, key=f"map_{st.session_state.view_token}", height=660,
           use_container_width=True, returned_objects=[])

@@ -190,18 +190,21 @@ from a normal shell). Key behaviours, several of them hard-won — **don't regre
 - **Route cards + Details.** Each candidate is a card (walk score /100, bar,
   distance, walk-time). A visible **"Show on map"** button (an `on_click` callback
   setting `st.session_state.focus`, **no `st.rerun`**) emphasises that route; all
-  routes are drawn at search time (focused = per-block colour + halo, alternatives
-  faint) so switching focus is a single rerun with the view preserved. A per-route
+  routes are drawn at search time so switching focus is a single rerun with the view
+  preserved. By default the focused route is a **single smooth line** (halo + one
+  colour from its overall walk_score), like the faint alternatives. A per-route
   **Details** expander reveals confidence, the weakest stretch, and a **"Show N
-  segments"** toggle that lists each block's score.
+  segments"** toggle: it lists each block's score **and** switches the focused route
+  on the map to per-block colouring (`seg_{focus}` flag, read by `build_map`).
 - **st_folium camera.** `returned_objects=[]` (the map needs no round-trip now, so
   pan/zoom never rerun); re-frame only on a deliberate remount via a changing `key`
   (`view_token`, bumped on a successful search), with `fit_bounds` to the routes;
   `zoom_snap=0` + `wheel_px_per_zoom_level=55` for smooth, moderate zoom.
-- **CSS gotchas:** the Streamlit header is kept (only the toolbar/menu hidden) so the
-  sidebar **collapse/expand control still works**; the sidebar **resize handle is
-  hidden** (`[data-testid="stSidebarResizeHandle"]`) since the width is fixed; the
-  main area's overflow is locked so the map doesn't spawn a page scrollbar.
+- **CSS gotchas:** the rail is **fixed-width and non-collapsible** — both the
+  resize handle (`stSidebarResizeHandle`) and the collapse/expand control
+  (`stSidebarCollapseButton` / `stSidebarCollapsedControl`) are hidden, so the
+  horizontal dimensions never change. The main area's overflow is locked so the map
+  doesn't spawn a page scrollbar.
 
 ### What's not yet implemented
 
