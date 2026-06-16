@@ -78,7 +78,11 @@ def inject_css() -> None:
         section[data-testid="stSidebar"] { width: 446px !important; min-width: 446px !important; background: #f6f1e6; border-right: 1px solid var(--line); }
         [data-testid="stSidebarResizeHandle"], [data-testid="stSidebarResizer"] { display: none !important; }
         [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display: none !important; }
-        section[data-testid="stSidebar"] > div { padding-top: 1.3rem; }
+        /* The sidebar header reserved space for the (now hidden) collapse button —
+           remove it and trim the content padding so the rail starts at the top. */
+        [data-testid="stSidebarHeader"] { display: none !important; height: 0 !important; padding: 0 !important; }
+        section[data-testid="stSidebar"] > div { padding-top: 0.4rem; }
+        [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
 
         /* Mono labels */
         .fp-eyebrow { font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:0.18em; color:#a8a08c; display:flex; align-items:center; gap:9px; margin-bottom:12px; }
@@ -271,6 +275,7 @@ st.session_state.setdefault("focus", 0)            # index of route emphasised o
 st.session_state.setdefault("committed", None)     # params behind the shown routes
 st.session_state.setdefault("active_weights", FACTOR_WEIGHTS)  # weights the shown routes/colours use
 st.session_state.setdefault("view_token", 0)       # bump to re-frame the map
+st.session_state.setdefault("framed_token", -1)    # last view_token the camera was fitted for
 st.session_state.setdefault("region", None)
 st.session_state.setdefault("error", None)
 
@@ -481,7 +486,7 @@ with st.sidebar:
 # Map (main area)
 # ---------------------------------------------------------------------------
 
-def build_map(G, routes, focus, weights, segmented):
+def build_map(G, routes, focus, weights, segmented, frame):
     center = _graph_center(G)
     fmap = folium.Map(location=center, zoom_start=14, tiles=None, zoom_control=True,
                       zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=55)
@@ -538,7 +543,9 @@ def build_map(G, routes, focus, weights, segmented):
                         fill_opacity=1, tooltip="Start").add_to(fmap)
     folium.CircleMarker(d, radius=7, color="#faf8f2", weight=3, fill_color=INK,
                         fill_opacity=1, tooltip="Destination").add_to(fmap)
-    if all_pts:
+    # Only fit the camera on a fresh search (frame=True). Focusing an alternative
+    # or toggling segments keeps the user's current pan/zoom — O and D are the same.
+    if frame and all_pts:
         lats = [p[0] for p in all_pts]
         lons = [p[1] for p in all_pts]
         fmap.fit_bounds([(min(lats), min(lons)), (max(lats), max(lons))], padding=(60, 60))
@@ -557,6 +564,8 @@ st.markdown(
 )
 
 _segmented = st.session_state.get(f"seg_{st.session_state.focus}", False)
-fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights, _segmented)
+_frame = st.session_state.framed_token != st.session_state.view_token  # fit only on a new search
+st.session_state.framed_token = st.session_state.view_token
+fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights, _segmented, _frame)
 st_folium(fmap, key=f"map_{st.session_state.view_token}", height=660,
           use_container_width=True, returned_objects=[])

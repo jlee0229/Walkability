@@ -197,9 +197,10 @@ from a normal shell). Key behaviours, several of them hard-won — **don't regre
   segments"** toggle: it lists each block's score **and** switches the focused route
   on the map to per-block colouring (`seg_{focus}` flag, read by `build_map`).
 - **st_folium camera.** `returned_objects=[]` (the map needs no round-trip now, so
-  pan/zoom never rerun); re-frame only on a deliberate remount via a changing `key`
-  (`view_token`, bumped on a successful search), with `fit_bounds` to the routes;
-  `zoom_snap=0` + `wheel_px_per_zoom_level=55` for smooth, moderate zoom.
+  pan/zoom never rerun). `fit_bounds` runs **only on a fresh search** — gated by
+  `framed_token != view_token` (`view_token` bumps on a successful search) — so
+  focusing an alternative or toggling segments keeps the user's pan/zoom (O and D
+  are unchanged). `zoom_snap=0` + `wheel_px_per_zoom_level=55` for smooth zoom.
 - **CSS gotchas:** the rail is **fixed-width and non-collapsible** — both the
   resize handle (`stSidebarResizeHandle`) and the collapse/expand control
   (`stSidebarCollapseButton` / `stSidebarCollapsedControl`) are hidden, so the
