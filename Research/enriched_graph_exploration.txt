@@ -1,0 +1,455 @@
+Loading OSM graph from /Users/leejaeho/Documents/tech_projects/Walkability/data/osm/boston_walk_enriched.graphml ...
+  52306 nodes, 150162 edges
+=== Edge sample (5 edges, source='all') ===
+
+  Edge (2501906385, 2501906354, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.75
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      49.66181052046372
+    data_source                 highway=footway
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (61355388, 61350476, key=0)
+    highway                     residential
+    highway_score               0.55
+    highway_confidence          1.0
+    surface_score               0.9
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      72.82635579396323
+    data_source                 city_inventory
+    sidewalk_condition          100.0
+    sidewalk_width_ft           10.0
+    sidewalk_survey_date        2014-10-18
+
+  Edge (7845084499, 7845084498, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.94
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      93.96364298354071
+    data_source                 city_inventory
+    sidewalk_condition          94.0
+    sidewalk_width_ft           9.5
+    sidewalk_survey_date        2014-12-22
+
+  Edge (7735848910, 7054907123, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.7
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      24.080032504433092
+    data_source                 city_inventory
+    sidewalk_condition          98.8
+    sidewalk_width_ft           9.5
+    sidewalk_survey_date        2015-01-06
+
+  Edge (7637209756, 7637210228, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.9
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      129.18761567085195
+    data_source                 city_inventory
+    sidewalk_condition          92.8
+    sidewalk_width_ft           6.5
+    sidewalk_survey_date        2014-09-24
+
+Loading OSM graph from /Users/leejaeho/Documents/tech_projects/Walkability/data/osm/boston_walk_enriched.graphml ...
+  52306 nodes, 150162 edges
+=== Edge sample (10 edges, source='city_inventory', highway='footway') ===
+
+  Edge (7650676413, 7878435477, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.875
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      16.267596414747803
+    data_source                 city_inventory
+    sidewalk_condition          87.5
+    sidewalk_width_ft           7.0
+    sidewalk_survey_date        2013-12-11
+
+  Edge (3181983827, 6769569851, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.9
+    surface_confidence          0.5
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      30.51761801953454
+    data_source                 city_inventory
+    sidewalk_condition          94.0
+    sidewalk_width_ft           5.5
+    sidewalk_survey_date        1970-01-01
+
+  Edge (9233783018, 13121560458, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.879
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      40.971893215223204
+    data_source                 city_inventory
+    sidewalk_condition          87.9
+    sidewalk_width_ft           8.0
+    sidewalk_survey_date        2014-12-17
+
+  Edge (9210073225, 9210073224, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.621
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      58.41224389353291
+    data_source                 city_inventory
+    sidewalk_condition          62.1
+    sidewalk_width_ft           5.0
+    sidewalk_survey_date        2014-12-12
+
+  Edge (8861213169, 8861211793, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.688
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      5.614520505037154
+    data_source                 city_inventory
+    sidewalk_condition          68.8
+    sidewalk_width_ft           7.5
+    sidewalk_survey_date        2014-03-17
+
+  Edge (7748212112, 7748212102, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.9
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      34.45461299686865
+    data_source                 city_inventory
+    sidewalk_condition          95.0
+    sidewalk_width_ft           6.5
+    sidewalk_survey_date        2014-11-19
+
+  Edge (7637209656, 7637209655, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.74
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      4.499209076347569
+    data_source                 city_inventory
+    sidewalk_condition          74.0
+    sidewalk_width_ft           6.5
+    sidewalk_survey_date        2014-09-29
+
+  Edge (13877187326, 11882563744, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.704
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      13.565156568769266
+    data_source                 city_inventory
+    sidewalk_condition          70.4
+    sidewalk_width_ft           7.5
+    sidewalk_survey_date        2014-07-31
+
+  Edge (7629960805, 4779856619, key=0)
+    highway                     ['steps', 'footway']
+    highway_score               0.5
+    highway_confidence          1.0
+    surface_score               0.166
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      59.86888923056469
+    data_source                 city_inventory
+    sidewalk_condition          16.6
+    sidewalk_width_ft           10.0
+    sidewalk_survey_date        2015-01-19
+
+  Edge (11959093636, 11959118904, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.707
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      7.282621109454327
+    data_source                 city_inventory
+    sidewalk_condition          70.7
+    sidewalk_width_ft           7.0
+    sidewalk_survey_date        2014-03-25
+
+Loading OSM graph from /Users/leejaeho/Documents/tech_projects/Walkability/data/osm/boston_walk_enriched.graphml ...
+  52306 nodes, 150162 edges
+=== Edge sample (4 edges, source='geometric') ===
+
+  Edge (7644818302, 7836445953, key=0)
+    highway                     corridor
+    highway_score               0.9
+    highway_confidence          0.3
+    surface_score               0.75
+    surface_confidence          None
+    foot_access                 yes
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      10.656958359486168
+    data_source                 no_tag
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (7836445953, 7644818302, key=0)
+    highway                     corridor
+    highway_score               0.9
+    highway_confidence          0.3
+    surface_score               0.75
+    surface_confidence          None
+    foot_access                 yes
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      10.656958359486168
+    data_source                 no_tag
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (7731670544, 7787956229, key=0)
+    highway                     track
+    highway_score               0.9
+    highway_confidence          0.3
+    surface_score               0.75
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      8.878071429933172
+    data_source                 no_tag
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (7787956229, 7731670544, key=0)
+    highway                     track
+    highway_score               0.9
+    highway_confidence          0.3
+    surface_score               0.75
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      8.878071429933172
+    data_source                 no_tag
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+Loading OSM graph from /Users/leejaeho/Documents/tech_projects/Walkability/data/osm/boston_walk_enriched.graphml ...
+  52306 nodes, 150162 edges
+=== Edge sample (5 edges, source='context') ===
+
+  Edge (61572069, 9020581069, key=0)
+    highway                     track
+    highway_score               0.35
+    highway_confidence          0.5
+    surface_score               0.55
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      77.81059715265421
+    data_source                 context:dominant=service
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (61382302, 11817142035, key=0)
+    highway                     track
+    highway_score               0.35
+    highway_confidence          0.5
+    surface_score               0.55
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      72.08082877942432
+    data_source                 context:dominant=service
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (7771803675, 61597892, key=0)
+    highway                     busway
+    highway_score               0.4
+    highway_confidence          0.65
+    surface_score               0.55
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      22.181577981946187
+    data_source                 context:dominant=busway
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (6510210766, 13626233514, key=0)
+    highway                     busway
+    highway_score               0.4
+    highway_confidence          0.5
+    surface_score               0.55
+    surface_confidence          None
+    foot_access                 None
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      8.188097828732987
+    data_source                 context:dominant=busway
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+  Edge (4786794328, 4786793720, key=0)
+    highway                     corridor
+    highway_score               0.4
+    highway_confidence          0.5
+    surface_score               0.55
+    surface_confidence          None
+    foot_access                 permissive
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      8.04363964236853
+    data_source                 context:dominant=corridor
+    sidewalk_condition          None
+    sidewalk_width_ft           None
+    sidewalk_survey_date        None
+
+Loading OSM graph from /Users/leejaeho/Documents/tech_projects/Walkability/data/osm/boston_walk_enriched.graphml ...
+  52306 nodes, 150162 edges
+=== Edge sample (5 edges, source='all') ===
+
+  Edge (10181202950, 10181202944, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.9
+    surface_confidence          0.5
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      4.7595201434449566
+    data_source                 city_inventory
+    sidewalk_condition          97.0
+    sidewalk_width_ft           6.5
+    sidewalk_survey_date        1970-01-01
+
+  Edge (9468883940, 9246752699, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.879
+    surface_confidence          0.5
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      93.4781720422069
+    data_source                 city_inventory
+    sidewalk_condition          87.9
+    sidewalk_width_ft           6.0
+    sidewalk_survey_date        1970-01-01
+
+  Edge (7597262842, 7597262841, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.7
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      10.707326554149768
+    data_source                 city_inventory
+    sidewalk_condition          98.8
+    sidewalk_width_ft           12.0
+    sidewalk_survey_date        2015-01-06
+
+  Edge (6538746931, 12677468350, key=0)
+    highway                     service
+    highway_score               0.35
+    highway_confidence          1.0
+    surface_score               0.926
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     False
+    edge_class                  shared
+    length                      6.1761877575988064
+    data_source                 city_inventory
+    sidewalk_condition          92.6
+    sidewalk_width_ft           8.0
+    sidewalk_survey_date        2014-11-07
+
+  Edge (7650883949, 7688029748, key=0)
+    highway                     footway
+    highway_score               0.9
+    highway_confidence          1.0
+    surface_score               0.7
+    surface_confidence          0.85
+    foot_access                 None
+    is_pedestrian_dedicated     True
+    edge_class                  pedestrian
+    length                      45.73468673189469
+    data_source                 city_inventory
+    sidewalk_condition          92.9
+    sidewalk_width_ft           5.5
+    sidewalk_survey_date        2015-01-05
+

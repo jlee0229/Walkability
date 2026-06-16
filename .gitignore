@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environment
+venv/
+.venv/
+
+# OS
+.DS_Store
+
+# Large / derived / external data (NOT committed — see README)
+#  - OSM graphs: regenerate with walkability/graph/download.py + build.py
+#  - Boston DPW sidewalk shapefile: obtain separately from the city open-data portal
+#  - data/osm/boston_walk_enriched.graphml is 122 MB (> GitHub's 100 MB limit)
+data/
+cache/
+
+# Generated diagnostic maps / artifacts
+notebooks/*.html
+notebooks/regions/
+notebooks/problem_route_maps/
+
+# Local editor / tooling state
+.claude/settings.local.json
+
+# Bundled reference archives
+Research/*.zip

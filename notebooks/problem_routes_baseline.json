@@ -1,0 +1,50 @@
+{
+  "bh_charles_to_state_house": {
+    "found": true,
+    "length": 755.7,
+    "walk_score": 0.8693,
+    "confidence": 0.9318,
+    "hops": 22,
+    "path_fp": 689461888
+  },
+  "bh_acorn_chestnut_brick": {
+    "found": true,
+    "length": 261.3,
+    "walk_score": 0.8653,
+    "confidence": 0.8865,
+    "hops": 6,
+    "path_fp": 3963057491
+  },
+  "bh_louisburg_to_charles": {
+    "found": true,
+    "length": 173.7,
+    "walk_score": 0.8504,
+    "confidence": 0.8957,
+    "hops": 5,
+    "path_fp": 2270578704
+  },
+  "charlestown_sullivan_cross": {
+    "found": true,
+    "length": 763.0,
+    "walk_score": 0.6731,
+    "confidence": 0.8698,
+    "hops": 24,
+    "path_fp": 2143257945
+  },
+  "newmarket_massave_arterial": {
+    "found": true,
+    "length": 1942.5,
+    "walk_score": 0.6781,
+    "confidence": 0.8919,
+    "hops": 20,
+    "path_fp": 3124825613
+  },
+  "nubian_roxbury_washington": {
+    "found": true,
+    "length": 906.0,
+    "walk_score": 0.8842,
+    "confidence": 0.9085,
+    "hops": 21,
+    "path_fp": 515763075
+  }
+}

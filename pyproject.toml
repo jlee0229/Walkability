@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "walkability"
+version = "0.1.0"
+dependencies = [
+    "osmnx",
+    "networkx",
+    "geopandas",
+    "shapely",
+    "pandas",
+    "numpy",
+    "folium",
+    "streamlit",
+    "streamlit-folium",
+]
+
+[tool.setuptools.packages.find]
+include = ["walkability*"]
