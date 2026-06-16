@@ -66,14 +66,16 @@ def inject_css() -> None:
         [data-testid="stAppViewContainer"] { background: #faf8f2; }
         h1, h2, h3 { font-family: 'Spectral', Georgia, serif; letter-spacing: -0.01em; }
 
-        /* Hide default Streamlit chrome for a cleaner app shell */
-        header[data-testid="stHeader"] { background: transparent; height: 0; }
+        /* Hide default Streamlit chrome for a cleaner app shell (but KEEP the
+           sidebar collapse/expand control so the rail can be reopened). */
+        header[data-testid="stHeader"] { background: transparent; }
         #MainMenu, footer { visibility: hidden; }
         [data-testid="stToolbar"] { display: none; }
-        [data-testid="stMainBlockContainer"] { padding-top: 1.6rem; }
+        [data-testid="stMainBlockContainer"] { padding-top: 1.0rem; }
 
-        /* Left rail */
+        /* Left rail — fixed width, so hide the drag-to-resize grip */
         section[data-testid="stSidebar"] { width: 446px !important; background: #f6f1e6; border-right: 1px solid var(--line); }
+        [data-testid="stSidebarResizeHandle"], [data-testid="stSidebarResizer"] { display: none !important; }
         section[data-testid="stSidebar"] > div { padding-top: 1.3rem; }
 
         /* Mono labels */
@@ -249,6 +251,15 @@ def route_details(G, route, weights):
     return worst_walk, (worst_hwy or "path"), dominant
 
 
+# Widget callbacks (run before the rerun's script body, so state is consistent).
+def _set_focus(i: int) -> None:
+    st.session_state.focus = i
+
+
+def _toggle(key: str) -> None:
+    st.session_state[key] = not st.session_state.get(key, False)
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -323,12 +334,9 @@ with st.sidebar:
 
     find = st.button("Update routes" if pending else "Find routes", type="primary")
 
-    with st.expander("Map area"):
-        _region_labels = {"full": "Full Boston"}
-        _region_labels.update({r: r.replace("_", " ").title() for r in DEV_REGIONS})
-        region = st.selectbox("Area", list(_region_labels), format_func=_region_labels.get,
-                              label_visibility="collapsed")
-
+# Region selector lives at the bottom of the rail (rendered later); read its
+# committed value here via the widget key so the graph can load first.
+region = st.session_state.get("region_select", "full")
 graph_path = str(ENRICHED_PATH if region == "full" else dev_region_path(region))
 if st.session_state.region != region:
     st.session_state.region = region
@@ -411,10 +419,11 @@ with st.sidebar:
                 f'  </div></div>',
                 unsafe_allow_html=True,
             )
+            # Selecting a route just sets focus (via callback, no st.rerun) — all
+            # routes are already drawn on the map, so this only re-emphasises.
             if i != st.session_state.focus:
-                if st.button("Show on map", key=f"focus_{i}", use_container_width=True):
-                    st.session_state.focus = i
-                    st.rerun()
+                st.button("Show on map", key=f"focus_{i}", use_container_width=True,
+                          on_click=_set_focus, args=(i,))
             else:
                 st.markdown(
                     '<div style="font-family:IBM Plex Mono,monospace;font-size:10.5px;'
@@ -429,13 +438,41 @@ with st.sidebar:
                     f'<div style="display:flex;justify-content:space-between;font-size:12.5px;'
                     f'color:#5c564a;padding:3px 0;">'
                     f'<span>Weakest stretch — {worst_hwy}</span>'
-                    f'<b style="font-family:IBM Plex Mono,monospace;color:{score_hex(worst_walk)};">{round(worst_walk*100)} / 100</b></div>'
-                    f'<div style="display:flex;justify-content:space-between;font-size:12.5px;'
-                    f'color:#5c564a;padding:3px 0;">'
-                    f'<span>Segments</span>'
-                    f'<b style="font-family:IBM Plex Mono,monospace;color:#2b271f;">{len(r.edges)}</b></div>',
+                    f'<b style="font-family:IBM Plex Mono,monospace;color:{score_hex(worst_walk)};">{round(worst_walk*100)} / 100</b></div>',
                     unsafe_allow_html=True,
                 )
+                seg_key = f"seg_{i}"
+                seg_open = st.session_state.get(seg_key, False)
+                st.button("Hide segments" if seg_open else f"Show {len(r.edges)} segments",
+                          key=f"segbtn_{i}", on_click=_toggle, args=(seg_key,))
+                if seg_open:
+                    rows = []
+                    for j, (u, v, ekey) in enumerate(r.edges):
+                        d = G[u][v][ekey]
+                        w, _ = edge_walkability(d, rweights)
+                        hwy = _as_str(d.get("highway")) or "path"
+                        length = _as_float(d.get("length")) or 0.0
+                        rows.append(
+                            f'<div style="display:flex;justify-content:space-between;gap:8px;padding:1px 0;">'
+                            f'<span style="color:#8a8270;">{j + 1}. {hwy}</span>'
+                            f'<span style="color:{score_hex(w)};">{round(w * 100)}/100 · {length:.0f} m</span></div>')
+                    st.markdown(
+                        '<div style="font-family:IBM Plex Mono,monospace;font-size:10.5px;'
+                        'line-height:1.7;max-height:220px;overflow:auto;margin-top:4px;'
+                        'border-top:1px solid #ece5d5;padding-top:6px;">' + "".join(rows) + "</div>",
+                        unsafe_allow_html=True,
+                    )
+
+
+# Region selector — tucked at the very bottom of the rail (will grow once we add
+# more areas). Its value is read at the top of the next run via the widget key.
+with st.sidebar:
+    st.markdown('<div class="fp-hair" style="margin:24px 0 8px;"></div>', unsafe_allow_html=True)
+    with st.expander("Map area"):
+        _region_labels = {"full": "Full Boston"}
+        _region_labels.update({r: r.replace("_", " ").title() for r in DEV_REGIONS})
+        st.selectbox("Area", list(_region_labels), format_func=_region_labels.get,
+                     label_visibility="collapsed", key="region_select")
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +482,7 @@ with st.sidebar:
 def build_map(G, routes, focus, weights):
     center = _graph_center(G)
     fmap = folium.Map(location=center, zoom_start=14, tiles=None, zoom_control=True,
-                      zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=50)
+                      zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=55)
     folium.TileLayer(
         "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",
         attr="© OpenStreetMap, © CARTO", subdomains="abcd", max_zoom=20, control=False,

@@ -160,32 +160,55 @@ The shapefile columns do not match generic names — use these constants in `bui
 - `inspected = "yes"` → survey happened, date was mis-logged. Use SCI/MATERIAL; apply `CONF_CITY_DATE_MISSING = CONF_CITY_OLDER × 0.85` (≈ 0.72). Do **not** treat these as lower-quality edges — the West Roxbury concentration would introduce a spurious spatial confidence gradient.
 - `inspected = null` → sidewalk polygon exists but was never field-surveyed. `city_row` is set to `None` in `_build_canonical_schema` before any city fields are read, so these fall through to the OSM-tag tier.
 
-### Implemented UI
+### Implemented UI — "Footpath" Streamlit app
 
-- **Streamlit app** at `app/streamlit_app.py` — run `streamlit run app/streamlit_app.py`.
-  Loads the graph once (`@st.cache_resource`, keyed by path; full Boston or any
-  dev region), takes origin/destination by address, lat/lon, or map click
-  (`streamlit-folium`), and exposes the `alpha` slider plus per-factor
-  weight sliders. Slider weights are threaded through `find_routes` → `edge_cost`/
-  `_build_route` → `edge_walkability`; when untouched it passes the `FACTOR_WEIGHTS`
-  object itself to keep the baked fast path. Routes render on a folium map coloured
-  by per-edge `walk_score`, with the empty-route case handled. `.claude/launch.json`
-  has a `walkability-ui` config (note: the in-IDE preview sandbox can't read `venv/`,
-  so launch from a normal shell).
-- **Geocoding** (`app/streamlit_app.py:geocode`) calls **Nominatim directly,
-  scoped to a Boston bounding box** (`bounded=1`, then the box as a soft bias),
-  wrapped in `@st.cache_data` so repeat lookups are instant (osmnx's own disk
-  cache also applies). `osmnx.geocode` is the unbounded last-ditch fallback.
-- **Map camera / st_folium quirks** (hard-won — don't regress): only return
-  `last_clicked` from `st_folium` (returning `center`/`zoom` makes every pan/zoom
-  rerun the script and jump the page to the top); re-frame the map only on a
-  deliberate remount via a changing component `key` (a `view_token` bumped on
-  Find-routes / Clear / region-switch), with `fit_bounds` to the route; smooth
-  zoom via `zoom_snap=0`. Click-on-map UX is still rough — the open work is the
-  rerun-on-click flash, since placing a pin requires a round-trip to Python.
+`app/streamlit_app.py` — run `streamlit run app/streamlit_app.py`. A warm editorial
+design (parchment + terracotta; Spectral / Public Sans / IBM Plex Mono via a Google-
+Fonts `@import`) with a fixed-width left control rail and a full-height map. The
+design source/mockup is `app/Footpath Atlas.html`; theme defaults live in
+`.streamlit/config.toml` and the rest is injected CSS. `.claude/launch.json` has a
+`walkability-ui` config (the in-IDE preview sandbox can't read `venv/`, so launch
+from a normal shell). Key behaviours, several of them hard-won — **don't regress**:
+
+- **Graph load once** (`@st.cache_resource`, keyed by path). The region selector
+  (`key="region_select"`) sits at the bottom of the rail; its value is read at the
+  **top** of the next run via the widget key so the graph can load before the
+  widget renders (defaults to `full` on first run).
+- **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
+  fought st_folium reruns and added clutter). Origin/destination are addresses,
+  geocoded by `geocode()` → **Nominatim scoped to a Boston bounding box**
+  (`bounded=1`, then the box as a soft bias), wrapped in `@st.cache_data`;
+  `osmnx.geocode` is the unbounded fallback.
+- **`alpha` + per-factor weight sliders.** The 0–100 "how you'll walk" slider maps
+  to `alpha = slider/100·5`. Weights thread through `find_routes` → `edge_cost`/
+  `_build_route` → `edge_walkability`; untouched, the `FACTOR_WEIGHTS` object itself
+  is passed to keep the baked fast path.
+- **Deferred recompute.** The map and route cards render from the **committed**
+  params (`st.session_state.active_weights`, frozen at the last search), NOT the
+  live sliders — so moving a fine-tune slider only shows a "changed" nudge and flips
+  the button to "Update routes"; nothing redraws until it's pressed.
+- **Route cards + Details.** Each candidate is a card (walk score /100, bar,
+  distance, walk-time). A visible **"Show on map"** button (an `on_click` callback
+  setting `st.session_state.focus`, **no `st.rerun`**) emphasises that route; all
+  routes are drawn at search time (focused = per-block colour + halo, alternatives
+  faint) so switching focus is a single rerun with the view preserved. A per-route
+  **Details** expander reveals confidence, the weakest stretch, and a **"Show N
+  segments"** toggle that lists each block's score.
+- **st_folium camera.** `returned_objects=[]` (the map needs no round-trip now, so
+  pan/zoom never rerun); re-frame only on a deliberate remount via a changing `key`
+  (`view_token`, bumped on a successful search), with `fit_bounds` to the routes;
+  `zoom_snap=0` + `wheel_px_per_zoom_level=55` for smooth, moderate zoom.
+- **CSS gotchas:** the Streamlit header is kept (only the toolbar/menu hidden) so the
+  sidebar **collapse/expand control still works**; the sidebar **resize handle is
+  hidden** (`[data-testid="stSidebarResizeHandle"]`) since the width is fixed; the
+  main area's overflow is locked so the map doesn't spawn a page scrollbar.
 
 ### What's not yet implemented
 
+- **More map areas (UI TODO).** The "Map area" selector is parked in an expander at
+  the bottom of the rail and currently offers Full Boston + the `DEV_REGIONS` test
+  beds. When real additional areas/cities are added, promote it to a first-class
+  control (and reconsider placement). Areas come from `DEV_REGIONS` in `build.py`.
 - Additional factors in `FACTOR_WEIGHTS` (`crossing_quality`, `poi_density`,
   `elevation_change`) were removed — no enrichment tier produces that edge data
   yet. Re-add a weight only alongside the edge field that feeds it.
