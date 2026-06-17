@@ -1,3 +1,15 @@
+---
+title: Humanpath
+emoji: 🚶
+colorFrom: orange
+colorTo: yellow
+sdk: docker
+app_port: 8501
+pinned: false
+short_description: Walkability-aware walking routes for Boston
+thumbnail: https://raw.githubusercontent.com/jlee0229/Walkability/main/app/humanpath_icon.png
+---
+
 # Walkability — walkability-aware pedestrian routing for Boston
 
 Enriches the Boston OpenStreetMap walk network with per-edge **walkability scores**
