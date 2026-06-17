@@ -12,6 +12,7 @@ dependencies = [
     "shapely",
     "pandas",
     "numpy",
+    "requests",
     "folium",
     "streamlit",
     "streamlit-folium",

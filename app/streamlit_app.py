@@ -38,7 +38,8 @@ from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
 
-st.set_page_config(page_title="Humanpath — Boston walk router", page_icon="🚶", layout="wide")
+_ICON_PATH = str(Path(__file__).parent / "humanpath_icon.png")
+st.set_page_config(page_title="Humanpath", page_icon=_ICON_PATH, layout="wide")
 
 # Palette (mirrors the Humanpath design direction).
 ACCENT = "#b1592e"
@@ -143,9 +144,26 @@ def inject_css() -> None:
 # Data + geometry helpers
 # ---------------------------------------------------------------------------
 
+# Graph files are too large for the repo (the enriched graph is ~122 MB), so a
+# deployed instance fetches them once from a GitHub Release on first use.
+_GRAPH_RELEASE = "https://github.com/jlee0229/Walkability/releases/download/data-v1"
+
+
 @st.cache_resource(show_spinner="Loading the walk graph (one-time, ~10s)…")
 def get_graph(path_str: str):
-    return load_graph(Path(path_str))
+    p = Path(path_str)
+    if not p.exists():  # not present locally (e.g. on a fresh deploy) → download once
+        import requests
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with st.spinner(f"Downloading map data ({p.name}) — first run only…"):
+            with requests.get(f"{_GRAPH_RELEASE}/{p.name}", stream=True, timeout=120) as r:
+                r.raise_for_status()
+                tmp = p.with_suffix(p.suffix + ".part")
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1 << 20):
+                        f.write(chunk)
+                tmp.replace(p)  # atomic: only a complete download becomes the real file
+    return load_graph(p)
 
 
 def _graph_center(G):
@@ -297,10 +315,16 @@ inject_css()
 
 with st.sidebar:
     st.markdown(
-        '<div class="fp-eyebrow"><span class="rule"></span>Walk router · Boston</span></div>'
-        '<div class="fp-title">Humanpath</div>'
+        '<div style="display:flex;align-items:center;gap:13px;margin-bottom:12px;">'
+        '  <svg width="42" height="42" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0;">'
+        '    <path d="M33 67 C 60 56, 40 44, 67 33" fill="none" stroke="#211e18" stroke-width="13" stroke-linecap="round"/>'
+        '    <circle cx="27" cy="73" r="15" fill="#b1592e"/>'
+        '    <circle cx="73" cy="27" r="15" fill="#b1592e"/>'
+        '  </svg>'
+        '  <div class="fp-title" style="margin:0;">Humanpath</div>'
+        '</div>'
         '<p class="fp-desc">Walking routes scored block by block on street type, surface, and foot access.'
-        'Not just the shortest line. Choose how far you’ll go for a better walk.</p>',
+        ' Not just the shortest line. Choose how far you’ll go for a better walk.</p>',
         unsafe_allow_html=True,
     )
     st.markdown('<div class="fp-hair"></div>', unsafe_allow_html=True)

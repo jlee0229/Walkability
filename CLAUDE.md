@@ -160,20 +160,26 @@ The shapefile columns do not match generic names — use these constants in `bui
 - `inspected = "yes"` → survey happened, date was mis-logged. Use SCI/MATERIAL; apply `CONF_CITY_DATE_MISSING = CONF_CITY_OLDER × 0.85` (≈ 0.72). Do **not** treat these as lower-quality edges — the West Roxbury concentration would introduce a spurious spatial confidence gradient.
 - `inspected = null` → sidewalk polygon exists but was never field-surveyed. `city_row` is set to `None` in `_build_canonical_schema` before any city fields are read, so these fall through to the OSM-tag tier.
 
-### Implemented UI — "Footpath" Streamlit app
+### Implemented UI — "Humanpath" Streamlit app
 
 `app/streamlit_app.py` — run `streamlit run app/streamlit_app.py`. A warm editorial
 design (parchment + terracotta; Spectral / Public Sans / IBM Plex Mono via a Google-
-Fonts `@import`) with a fixed-width left control rail and a full-height map. The
-design source/mockup is `app/Footpath Atlas.html`; theme defaults live in
-`.streamlit/config.toml` and the rest is injected CSS. `.claude/launch.json` has a
-`walkability-ui` config (the in-IDE preview sandbox can't read `venv/`, so launch
-from a normal shell). Key behaviours, several of them hard-won — **don't regress**:
+Fonts `@import`) with a fixed-width left control rail and a full-height map. Branding:
+the "Humanpath" wordmark + a two-dot/connector logo (inline SVG in the rail header;
+`app/humanpath_icon.png`, generated with PIL, is the favicon). The design source/
+mockup is `app/Footpath Atlas.html`; theme defaults live in `.streamlit/config.toml`
+and the rest is injected CSS. `.claude/launch.json` has a `walkability-ui` config (the
+in-IDE preview sandbox can't read `venv/`, so launch from a normal shell). Key
+behaviours, several of them hard-won — **don't regress**:
 
-- **Graph load once** (`@st.cache_resource`, keyed by path). The region selector
-  (`key="region_select"`) sits at the bottom of the rail; its value is read at the
-  **top** of the next run via the widget key so the graph can load before the
-  widget renders (defaults to `full` on first run).
+- **Graph load once + download-on-startup** (`@st.cache_resource`, keyed by path).
+  The graph files are too big for the repo (enriched ≈122 MB), so `get_graph` fetches
+  any missing file from a **GitHub Release** (`_GRAPH_RELEASE`, tag `data-v1`) via
+  streaming `requests` to a `.part` temp then atomic rename — this is what makes a
+  deployed instance (Streamlit Cloud) work without the data in git. Locally the files
+  already exist so nothing downloads. The region selector (`key="region_select"`)
+  sits at the bottom of the rail; its value is read at the **top** of the next run via
+  the widget key so the graph can load before the widget renders (default `full`).
 - **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
   fought st_folium reruns and added clutter). Origin/destination are addresses,
   geocoded by `geocode()` → **Nominatim scoped to a Boston bounding box**
