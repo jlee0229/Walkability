@@ -227,6 +227,24 @@ behaviours, several of them hard-won — **don't regress**:
 
 ### What's not yet implemented
 
+- **Reduce graph RAM footprint (deployment TODO).** The full enriched graph
+  loads to **~2.2 GB resident** in NetworkX (52k nodes / 150k edges; the 122 MB
+  GraphML balloons due to Python per-object overhead + ~80k shapely geometry
+  objects). This exceeds **Streamlit Community Cloud's 1 GB cap**, so the deployed
+  app there can load the graph (sequential allocation tolerates swap) but *routing*
+  thrashes on swap (random-access traversal) → multi-minute hangs. Locally (16 GB)
+  and on **Hugging Face Spaces free CPU-basic (16 GB)** it fits fine; the latter is
+  the chosen home for the full-Boston deploy. Routing adds ~0 MB at query time — the
+  cost is entirely the resident graph. Options to shrink it, **none done yet**:
+  (a) drop `geometry` + unused OSM attrs (`osmid`, `edge_class`, `sidewalk_*` raw
+  fields, `oneway`/`reversed`, `service`/`maxspeed`/`lanes`/`width`/etc.) — measured
+  **2.2 GB → 1.47 GB**, still over 1 GB, and loses curved map lines (UI falls back to
+  straight node-to-node segments); (b) also drop the per-factor score fields and rely
+  on baked `walk_score`/`walk_confidence` (sacrifices slider fine-tune fidelity);
+  (c) abandon the osmnx/GraphML in-memory representation for a compact arrays/pickle
+  structure (largest effort, only path likely to clear 1 GB). Needs a `--force`
+  rebuild + a new release asset + a matching loader. Pursue only if returning to a
+  1 GB host.
 - **More map areas (UI TODO).** The "Map area" selector is parked in an expander at
   the bottom of the rail and currently offers Full Boston + the `DEV_REGIONS` test
   beds. When real additional areas/cities are added, promote it to a first-class
