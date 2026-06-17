@@ -183,6 +183,9 @@ from a normal shell). Key behaviours, several of them hard-won — **don't regre
   to `alpha = slider/100·5`. Weights thread through `find_routes` → `edge_cost`/
   `_build_route` → `edge_walkability`; untouched, the `FACTOR_WEIGHTS` object itself
   is passed to keep the baked fast path.
+- **Distance units.** A `mi`/`km` segmented control (`key="units"`) defaults to
+  **miles** (US); `dist_str(m, unit)` formats everything (route distance, weakest-
+  stretch offset, per-segment lengths), using feet under 0.1 mi.
 - **Deferred recompute.** The map and route cards render from the **committed**
   params (`st.session_state.active_weights`, frozen at the last search), NOT the
   live sliders — so moving a fine-tune slider only shows a "changed" nudge and flips
@@ -193,14 +196,23 @@ from a normal shell). Key behaviours, several of them hard-won — **don't regre
   routes are drawn at search time so switching focus is a single rerun with the view
   preserved. By default the focused route is a **single smooth line** (halo + one
   colour from its overall walk_score), like the faint alternatives. A per-route
-  **Details** expander reveals confidence, the weakest stretch, and a **"Show N
-  segments"** toggle: it lists each block's score **and** switches the focused route
-  on the map to per-block colouring (`seg_{focus}` flag, read by `build_map`).
-- **st_folium camera.** `returned_objects=[]` (the map needs no round-trip now, so
-  pan/zoom never rerun). `fit_bounds` runs **only on a fresh search** — gated by
-  `framed_token != view_token` (`view_token` bumps on a successful search) — so
-  focusing an alternative or toggling segments keeps the user's pan/zoom (O and D
-  are unchanged). `zoom_snap=0` + `wheel_px_per_zoom_level=55` for smooth zoom.
+  **Details** expander reveals confidence, the **weakest stretch** (its distance
+  from the start, via `route_details` returning the cumulative offset to the
+  lowest-scoring block), and a **"Show N segments"** toggle: it lists each block's
+  score **and** switches the focused route on the map to per-block colouring
+  (`seg_{focus}` flag, read by `build_map`).
+- **st_folium camera.** `returned_objects=[]` (the map needs no round-trip, so
+  pan/zoom never rerun). `build_map` centres on and `fit_bounds` to the **focused
+  route**; st_folium only re-renders (re-fits) when the figure actually changes —
+  a search, "Show on map", or a segment toggle — so editing sliders/addresses/units
+  leaves the view alone and the camera never snaps to the city default. (Earlier
+  `framed_token` gating is gone — fitting the focused route subsumes it.)
+- **Wheel zoom.** Native Leaflet zoom with `zoom_snap=0` (fractional) +
+  `wheel_px_per_zoom_level=40` (brisk). The **Leaflet.SmoothWheelZoom** plugin was
+  tried for Google-Maps-style continuous zoom but **does not execute inside
+  st_folium's iframe** (and disabling native zoom alongside it left the map
+  un-zoomable), so it was reverted — don't re-add it without confirming it actually
+  runs in the component.
 - **CSS gotchas:** the rail is **fixed-width and non-collapsible** — both the
   resize handle (`stSidebarResizeHandle`) and the collapse/expand control
   (`stSidebarCollapseButton` / `stSidebarCollapsedControl`) are hidden, so the

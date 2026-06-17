@@ -219,8 +219,14 @@ def score_hex(s01: float) -> str:
     return "#c0512f"
 
 
-def dist_str(m: float) -> str:
-    return f"{m / 1000:.1f} km" if m >= 1000 else f"{round(m / 10) * 10:.0f} m"
+def dist_str(m: float, unit: str = "mi") -> str:
+    """Format a distance in metres as miles (default, US) or km."""
+    if unit == "km":
+        return f"{m / 1000:.1f} km" if m >= 1000 else f"{round(m / 10) * 10:.0f} m"
+    mi = m / 1609.34
+    if mi < 0.1:  # short hops read better in feet
+        return f"{round(m * 3.28084 / 10) * 10:.0f} ft"
+    return f"{mi:.2f} mi"
 
 
 def time_str(m: float) -> str:
@@ -239,22 +245,26 @@ _FACTOR_LABELS = {
 
 
 def route_details(G, route, weights):
-    """Weakest block (lowest-scoring edge) + the route's dominant street name."""
-    worst_walk, worst_hwy = 1.0, None
+    """Weakest block (lowest-scoring edge), how far into the route it starts, and
+    the route's dominant street name."""
+    worst_walk, worst_dist = 1.0, 0.0
+    cum = 0.0
     street_len: dict[str, float] = defaultdict(float)
     for u, v, key in route.edges:
         d = G[u][v][key]
+        length = float(d.get("length") or 0.0)
         w, _ = edge_walkability(d, weights)
         if w < worst_walk:
-            worst_walk, worst_hwy = w, _as_str(d.get("highway"))
+            worst_walk, worst_dist = w, cum  # distance from start to the weakest block
+        cum += length
         name = d.get("name")
         if isinstance(name, list):
             name = name[0] if name else None
         name = _as_str(name)
         if name:
-            street_len[name] += float(d.get("length") or 0.0)
+            street_len[name] += length
     dominant = max(street_len, key=street_len.get) if street_len else None
-    return worst_walk, (worst_hwy or "path"), dominant
+    return worst_walk, worst_dist, dominant
 
 
 # Widget callbacks (run before the rerun's script body, so state is consistent).
@@ -274,8 +284,7 @@ st.session_state.setdefault("routes", [])
 st.session_state.setdefault("focus", 0)            # index of route emphasised on the map
 st.session_state.setdefault("committed", None)     # params behind the shown routes
 st.session_state.setdefault("active_weights", FACTOR_WEIGHTS)  # weights the shown routes/colours use
-st.session_state.setdefault("view_token", 0)       # bump to re-frame the map
-st.session_state.setdefault("framed_token", -1)    # last view_token the camera was fitted for
+st.session_state.setdefault("view_token", 0)       # bump to remount the map on a new search
 st.session_state.setdefault("region", None)
 st.session_state.setdefault("error", None)
 
@@ -317,6 +326,13 @@ with st.sidebar:
     sc2.markdown('<div style="text-align:right;"><span style="font-size:11.5px;color:#a8a08c;">Best walk</span></div>', unsafe_allow_html=True)
 
     alpha = round(alpha_slider / 100 * 5, 2)  # 0 → shortest path; ~5 → strong walkability pull
+
+    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    uc1, uc2 = st.columns([1, 1])
+    uc1.markdown('<div class="fp-mono" style="padding-top:6px;">Distance units</div>', unsafe_allow_html=True)
+    with uc2:
+        unit = st.segmented_control("Distance units", ["mi", "km"], default="mi",
+                                    label_visibility="collapsed", key="units") or "mi"
 
     with st.expander("Fine-tune what matters"):
         w_road = st.slider("Street type", 0.0, 10.0, FACTOR_WEIGHTS["road_type"], 0.5)
@@ -360,14 +376,16 @@ G = get_graph(graph_path)
 
 if find:
     st.session_state.error = None
-    o = geocode(o_addr)
-    d = geocode(d_addr)
+    with st.spinner("Reading the streets…"):
+        o = geocode(o_addr)
+        d = geocode(d_addr)
+        routes_found = None if (o is None or d is None) else find_routes(G, o, d, alpha=alpha, weights=weights)
     if o is None:
         st.session_state.error = f"Couldn't find “{o_addr}”. Try a more specific address."
     elif d is None:
         st.session_state.error = f"Couldn't find “{d_addr}”. Try a more specific address."
     else:
-        st.session_state.routes = find_routes(G, o, d, alpha=alpha, weights=weights)
+        st.session_state.routes = routes_found
         st.session_state.committed = params
         st.session_state.active_weights = weights  # freeze rendering to the committed weights
         st.session_state.focus = 0
@@ -399,14 +417,14 @@ with st.sidebar:
         shortest = min(r.total_length for r in routes)
         st.markdown(
             f'<p style="margin:2px 0 16px;font-size:12.5px;color:#8a8270;line-height:1.5;">'
-            f'Best walk scores {round(best_score * 100)}/100 · shortest is {dist_str(shortest)}. '
+            f'Best walk scores {round(best_score * 100)}/100 · shortest is {dist_str(shortest, unit)}. '
             f'Sorted by your priorities.</p>', unsafe_allow_html=True)
 
         rweights = st.session_state.active_weights  # render with committed weights, not live sliders
         st.session_state.focus = min(st.session_state.focus, len(routes) - 1)
         details = [route_details(G, r, rweights) for r in routes]
 
-        for i, (r, (worst_walk, worst_hwy, dominant)) in enumerate(zip(routes, details)):
+        for i, (r, (worst_walk, worst_dist, dominant)) in enumerate(zip(routes, details)):
             sc = r.walk_score
             col = score_hex(sc)
             via = f"via {dominant}" if dominant else f"{len(r.edges)} blocks"
@@ -421,7 +439,7 @@ with st.sidebar:
                 f'    <span class="fp-score-100">/ 100</span><span class="fp-score-tag">Walk score</span></div>'
                 f'  <div class="fp-bar"><div class="fp-bar-fill" style="width:{max(4, round(sc*100))}%;background:{col};"></div></div>'
                 f'  <div class="fp-meta">'
-                f'    <div><b>{dist_str(r.total_length)}</b><div class="lbl">Distance</div></div>'
+                f'    <div><b>{dist_str(r.total_length, unit)}</b><div class="lbl">Distance</div></div>'
                 f'    <div><b>{time_str(r.total_length)}</b><div class="lbl">Walk time</div></div>'
                 f'  </div></div>',
                 unsafe_allow_html=True,
@@ -444,7 +462,7 @@ with st.sidebar:
                     f'<b style="font-family:IBM Plex Mono,monospace;color:#2b271f;">{round(r.confidence*100)} / 100</b></div>'
                     f'<div style="display:flex;justify-content:space-between;font-size:12.5px;'
                     f'color:#5c564a;padding:3px 0;">'
-                    f'<span>Weakest stretch — {worst_hwy}</span>'
+                    f'<span>Weakest stretch — {dist_str(worst_dist, unit)} in</span>'
                     f'<b style="font-family:IBM Plex Mono,monospace;color:{score_hex(worst_walk)};">{round(worst_walk*100)} / 100</b></div>',
                     unsafe_allow_html=True,
                 )
@@ -462,7 +480,7 @@ with st.sidebar:
                         rows.append(
                             f'<div style="display:flex;justify-content:space-between;gap:8px;padding:1px 0;">'
                             f'<span style="color:#8a8270;">{j + 1}. {hwy}</span>'
-                            f'<span style="color:{score_hex(w)};">{round(w * 100)}/100 · {length:.0f} m</span></div>')
+                            f'<span style="color:{score_hex(w)};">{round(w * 100)}/100 · {dist_str(length, unit)}</span></div>')
                     st.markdown(
                         '<div style="font-family:IBM Plex Mono,monospace;font-size:10.5px;'
                         'line-height:1.7;max-height:220px;overflow:auto;margin-top:4px;'
@@ -486,10 +504,20 @@ with st.sidebar:
 # Map (main area)
 # ---------------------------------------------------------------------------
 
-def build_map(G, routes, focus, weights, segmented, frame):
-    center = _graph_center(G)
+def _focused_center(G, route):
+    ys = [G.nodes[n]["y"] for n in route.nodes]
+    xs = [G.nodes[n]["x"] for n in route.nodes]
+    return (sum(ys) / len(ys), sum(xs) / len(xs))
+
+
+def build_map(G, routes, focus, weights, segmented):
+    # Centre on the focused route (never the graph default) so any re-render lands
+    # on the trip, not on the city centroid. Native wheel zoom (the SmoothWheelZoom
+    # plugin doesn't execute inside st_folium's iframe): zoom_snap=0 for fractional
+    # zoom, wheel_px_per_zoom_level=40 for a brisk-but-smooth trackpad/mouse zoom.
+    center = _focused_center(G, routes[focus]) if routes else _graph_center(G)
     fmap = folium.Map(location=center, zoom_start=14, tiles=None, zoom_control=True,
-                      zoom_snap=0, zoom_delta=0.5, wheel_px_per_zoom_level=55)
+                      zoom_snap=0, wheel_px_per_zoom_level=40)
     folium.TileLayer(
         "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",
         attr="© OpenStreetMap, © CARTO", subdomains="abcd", max_zoom=20, control=False,
@@ -506,19 +534,16 @@ def build_map(G, routes, focus, weights, segmented, frame):
     # is a single smooth line by default; only "Show segments" (segmented=True)
     # breaks it into per-block coloured pieces.
     order = [i for i in range(len(routes)) if i != focus] + [focus]
-    all_pts = []
     for i in order:
         r = routes[i]
         if i != focus:
             coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in r.nodes]
-            all_pts += coords
             folium.PolyLine(coords, color=score_hex(r.walk_score), weight=4,
                             opacity=0.4, line_cap="round").add_to(fmap)
         else:
             full = []
             for u, v, key in r.edges:
                 full += _edge_coords(G, u, v, key)
-            all_pts += full
             folium.PolyLine(full, color="#faf8f2", weight=10, opacity=1,
                             line_cap="round", line_join="round").add_to(fmap)  # halo
             if segmented:
@@ -543,11 +568,16 @@ def build_map(G, routes, focus, weights, segmented, frame):
                         fill_opacity=1, tooltip="Start").add_to(fmap)
     folium.CircleMarker(d, radius=7, color="#faf8f2", weight=3, fill_color=INK,
                         fill_opacity=1, tooltip="Destination").add_to(fmap)
-    # Only fit the camera on a fresh search (frame=True). Focusing an alternative
-    # or toggling segments keeps the user's current pan/zoom — O and D are the same.
-    if frame and all_pts:
-        lats = [p[0] for p in all_pts]
-        lons = [p[1] for p in all_pts]
+    # Fit the camera to the FOCUSED route. st_folium only re-renders (and thus
+    # re-fits) when the figure actually changes — i.e. on a search, on "Show on
+    # map", or on a segment toggle — so editing sliders/addresses leaves the view
+    # alone, and the camera never snaps to the city default.
+    fpts = []
+    for u, v, key in routes[focus].edges:
+        fpts += _edge_coords(G, u, v, key)
+    if fpts:
+        lats = [p[0] for p in fpts]
+        lons = [p[1] for p in fpts]
         fmap.fit_bounds([(min(lats), min(lons)), (max(lats), max(lons))], padding=(60, 60))
     return fmap
 
@@ -564,8 +594,6 @@ st.markdown(
 )
 
 _segmented = st.session_state.get(f"seg_{st.session_state.focus}", False)
-_frame = st.session_state.framed_token != st.session_state.view_token  # fit only on a new search
-st.session_state.framed_token = st.session_state.view_token
-fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights, _segmented, _frame)
+fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights, _segmented)
 st_folium(fmap, key=f"map_{st.session_state.view_token}", height=660,
           use_container_width=True, returned_objects=[])
