@@ -84,6 +84,8 @@ def inject_css() -> None:
         [data-testid="stSidebarHeader"] { display: none !important; height: 0 !important; padding: 0 !important; }
         section[data-testid="stSidebar"] > div { padding-top: 0.4rem; }
         [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
+        /* Right-align the mi/km units toggle to the rail's right edge */
+        section[data-testid="stSidebar"] [data-testid="stSegmentedControl"] { justify-content: flex-end; }
 
         /* Mono labels */
         .fp-eyebrow { font-family:'IBM Plex Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:0.18em; color:#a8a08c; display:flex; align-items:center; gap:9px; margin-bottom:12px; }
@@ -370,16 +372,18 @@ with st.sidebar:
 
     params = {"o": o_addr.strip(), "d": d_addr.strip(), "alpha": alpha, "w": dict(_custom)}
     pending = st.session_state.committed is not None and params != st.session_state.committed
-    if pending:
-        st.markdown(
+    # Render the nudge into a placeholder *above* the button, but fill it only after
+    # we know whether the button was clicked — so it vanishes the moment Update is hit.
+    nudge = st.empty()
+    find = st.button("Update routes" if pending else "Find routes", type="primary")
+    if pending and not find:
+        nudge.markdown(
             '<div style="display:flex;align-items:center;gap:9px;margin:6px 0 10px;padding:10px 13px;'
             'border-radius:11px;background:#f7e9e0;border:1px solid #e7c9b6;">'
             '<div style="width:6px;height:6px;border-radius:50%;background:#b1592e;"></div>'
-            '<span style="font-size:12.5px;color:#5c564a;">Priorities changed — find again to recompute.</span></div>',
+            '<span style="font-size:12.5px;color:#5c564a;">Priorities changed — update to recompute.</span></div>',
             unsafe_allow_html=True,
         )
-
-    find = st.button("Update routes" if pending else "Find routes", type="primary")
 
 # Region selector lives at the bottom of the rail (rendered later); read its
 # committed value here via the widget key so the graph can load first.
