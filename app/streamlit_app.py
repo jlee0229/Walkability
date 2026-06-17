@@ -1,5 +1,5 @@
 """
-Footpath — walkability-aware walking routes for Boston (Streamlit UI).
+Humanpath — walkability-aware walking routes for Boston (Streamlit UI).
 
 Run with:
     streamlit run app/streamlit_app.py
@@ -38,9 +38,9 @@ from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
 
-st.set_page_config(page_title="Footpath — Boston walk router", page_icon="🚶", layout="wide")
+st.set_page_config(page_title="Humanpath — Boston walk router", page_icon="🚶", layout="wide")
 
-# Palette (mirrors the Footpath design direction).
+# Palette (mirrors the Humanpath design direction).
 ACCENT = "#b1592e"
 INK = "#211e18"
 WALK_SPEED_MPS = 1.33  # ~average pedestrian pace, for walk-time estimates
@@ -143,7 +143,7 @@ def inject_css() -> None:
 # Data + geometry helpers
 # ---------------------------------------------------------------------------
 
-@st.cache_resource(show_spinner="Loading the walk graph (one-time, ~10 s for full Boston)…")
+@st.cache_resource(show_spinner="Loading the walk graph (one-time, ~10s)…")
 def get_graph(path_str: str):
     return load_graph(Path(path_str))
 
@@ -288,10 +288,10 @@ inject_css()
 
 with st.sidebar:
     st.markdown(
-        '<div class="fp-eyebrow"><span class="rule"></span>Walk router · Boston</div>'
-        '<div class="fp-title">Footpath</div>'
-        '<p class="fp-desc">Walking routes scored block by block on street type, surface and '
-        'foot access — not just the shortest line. Choose how far you’ll go for a better walk.</p>',
+        '<div class="fp-eyebrow"><span class="rule"></span>Walk router · Boston</span></div>'
+        '<div class="fp-title">Humanpath</div>'
+        '<p class="fp-desc">Walking routes scored block by block on street type, surface, and foot access.'
+        'Not just the shortest line. Choose how far you’ll go for a better walk.</p>',
         unsafe_allow_html=True,
     )
     st.markdown('<div class="fp-hair"></div>', unsafe_allow_html=True)
