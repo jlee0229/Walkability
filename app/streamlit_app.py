@@ -615,7 +615,8 @@ st.markdown(
     'font-family:IBM Plex Mono,monospace;font-size:11px;color:#5c564a;">'
     '<span style="text-transform:uppercase;letter-spacing:0.12em;color:#a8a08c;">Walk score by block</span>'
     '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#3f8f5f;vertical-align:middle;"></span> 80+</span>'
-    '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c8922f;vertical-align:middle;"></span> 50–79</span>'
+    '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#789b3e;vertical-align:middle;"></span> 65–79</span>'
+    '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c8922f;vertical-align:middle;"></span> 50–64</span>'
     '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c0512f;vertical-align:middle;"></span> under 50</span>'
     '</div>',
     unsafe_allow_html=True,
