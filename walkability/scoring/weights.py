@@ -102,42 +102,130 @@ HIGHWAY_DISTINCTIVENESS: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# Factor weights  (will be user-adjustable in the Streamlit UI)
+# Factor weights and category structure  (scoring/factors.py)
 # ---------------------------------------------------------------------------
-# Each key maps to a scoring factor in scoring/factors.py. Values are relative
-# weights — scoring/factors.py renormalises them over whichever factors are
-# actually present on an edge, so the raw values here are easy to reason about
-# and missing data never silently penalises an edge.
+# Walkability is scored in TWO LEVELS (Human Development Index style), so a
+# failure in one DIMENSION of walking cannot be bought back by excellence in
+# another (a pristine surface must not rescue a walk along a highway):
 #
-# Ordering reflects what a pedestrian experiences most directly: the road
-# type they walk along dominates, then the surface underfoot (its structural
-# condition and its material comfort, weighted equally), then explicit foot
-# access as a soft signal.
+#   1. WITHIN a category — a weighted ARITHMETIC mean of the present factors.
+#      Factors in the same category are SUBSTITUTABLE (good structural condition
+#      offsets so-so material). FACTOR_WEIGHTS below are these WITHIN-category
+#      relative weights, renormalised over whatever factors are present.
+#   2. ACROSS categories — an equal-weight GEOMETRIC mean of the category values,
+#      each floored to [CATEGORY_FLOOR, 1]. Categories are NON-SUBSTITUTABLE, so a
+#      single weak category dominates. The floor stops one zero category (motorway
+#      road_type, foot=no, on-arterial environment) from annihilating all
+#      discrimination — exactly as HDI bounds each dimension above zero.
 #
-# road_type is set ABOVE the COMBINED surface weight (surface_quality +
-# surface_material = 4.0, so road_type = 4.5). This was confirmed by the
-# 10-route ground-truth survey (notebooks/ground_truth.csv): with the earlier
-# 3.0, the two surface factors summed to 4.0 > 3.0 and collectively outvoted
-# the road type, so a pristine sidewalk in a hostile environment (e.g. the
-# Newmarket industrial route) over-scored. Keeping road_type just above the
-# surface sum makes the environment the primary signal while still letting
-# surface meaningfully move the score.
+# CATEGORY_MAP assigns every factor to one of three dimensions — "Will I be safe,
+# will it be easy, is it a real walking route?":
+#   safety  : environment (= arterial proximity × eyes-on-street)
+#   comfort : surface condition, surface material, sidewalk width
+#   path    : road type, foot access
+#
+# This SUPERSEDES the earlier flat-mean tuning where road_type (4.5) was set just
+# above the surface SUM (4.0). Non-substitutability is now STRUCTURAL (the
+# geometric mean), so the cross-factor balance no longer lives in these numbers —
+# they only set relative weight WITHIN a category. Changing the structure or these
+# weights requires a --force rebuild (baked walk_score) + re-baseline.
 #
 # foot_access is ALSO a hard routing constraint (foot=no excludes the edge,
-# foot=private penalises its cost) — see routing/cost.py. The weight here is
-# only the soft preference folded into the composite walkability score.
+# foot=private penalises its cost) — see routing/cost.py. The weight here is only
+# the soft preference folded into the Path category.
 #
-# Removed pending edge data: crossing_quality, poi_density, elevation_change.
-# These were placeholders — no enrichment tier in graph/build.py produces them
-# yet, so scoring on them is impossible. Re-add with matching edge fields once
-# that data exists.
+# Removed pending edge data: crossing_quality, poi_density, elevation_change —
+# no enrichment tier produces them yet (elevation_change deferred until a hilly
+# target city; Research/break_research_2026-06-17.md §2.3). New factors slot into
+# a category in CATEGORY_MAP once their edge field exists.
 
 FACTOR_WEIGHTS: dict[str, float] = {
-    "road_type":         4.5,   # edge["highway_score"] — slightly above the surface SUM (4.0)
+    # Path legitimacy — is this a real walking route?
+    "road_type":         3.0,   # edge["highway_score"] — dominant within Path
+    "foot_access":       1.0,   # edge["foot_access"] — soft signal (hard rule in cost.py)
+    # Safety — will cars or strangers harm me? (sole factor for now)
+    "environment":       1.0,   # edge["environment_score"] — arterial proximity × eyes
+    # Comfort — is it physically easy and pleasant underfoot?
     "surface_quality":   2.0,   # edge["surface_score"] — structural condition (SCI)
-    "surface_material":  2.0,   # edge["surface_material_score"] — intrinsic material comfort
-    "foot_access":       1.0,   # edge["foot_access"] — soft signal (hard rule lives in cost.py)
+    "surface_material":  2.0,   # edge["surface_material_score"] — material comfort
+    "surface_width":     1.0,   # edge["width_score"] — sidewalk room (city data; often absent)
 }
+
+# Factor → category. Single source of truth for the two-level aggregation in
+# scoring/factors.py::edge_walkability.
+CATEGORY_MAP: dict[str, str] = {
+    "road_type":        "path",
+    "foot_access":      "path",
+    "environment":      "safety",
+    "surface_quality":  "comfort",
+    "surface_material": "comfort",
+    "surface_width":    "comfort",
+}
+
+# Lower bound on a category value before the cross-category geometric mean, so a
+# single zero category punishes hard without zeroing the whole score. STARTING
+# value — tune against notebooks/ground_truth.csv.
+CATEGORY_FLOOR: float = 0.15
+
+# Sidewalk width → comfort score ramp (feet). Below MIN ≈ no buffer / forced
+# single-file; at/above GOOD ≈ comfortable two-abreast. Linear between. From the
+# city inventory (SWK_WIDTH) only — absent on most edges, so it drops out where
+# unknown (never penalises an edge for missing width).
+SIDEWALK_WIDTH_MIN_FT:  float = 3.0   # ramp start → score 0.0
+SIDEWALK_WIDTH_GOOD_FT: float = 8.0   # ramp end   → score 1.0
+
+
+# ---------------------------------------------------------------------------
+# Environment factor parameters  (graph/environment.py — single source of truth)
+# ---------------------------------------------------------------------------
+# The environment factor combines two independent sub-signals, multiplied as a
+# GEOMETRIC mean so the composite is high only when BOTH are high (a quiet street
+# next to an expressway, or a back alley with no eyes, both collapse toward 0):
+#
+#   1. arterial_proximity_score — car safety. 0 on/adjacent to a high-speed
+#      arterial, ramping to 1 beyond that arterial class's reach. The walk graph
+#      EXCLUDES motorway/trunk, so arterial geometry is pulled separately
+#      (graph/download_environment.py).
+#   2. eyes_score — perceived social safety ("eyes on the street", Jacobs).
+#      Driven by active frontage (shops/amenities) and built enclosure
+#      (buildings) near the edge, knocked down for back-alley geometry.
+#
+# All values below are STARTING heuristics — the eyes_score formula in
+# particular needs tuning against notebooks/ground_truth.csv, since OSM does not
+# cheaply expose building-entrance orientation.
+
+# Arterial classes and the distance (metres) over which each stops mattering.
+# A pedestrian feels a motorway/expressway from much further than a secondary
+# road, so the reach is class-scaled. _link ramps inherit their base class's
+# reach (resolved in graph/environment.py).
+ARTERIAL_REACH_M: dict[str, float] = {
+    "motorway":  150.0,
+    "trunk":     150.0,
+    "primary":   100.0,
+    "secondary":  80.0,
+}
+
+# OSM highway tag values to pull as "arterials" (base classes + their link ramps).
+ARTERIAL_HIGHWAY_TAGS: list[str] = [
+    *ARTERIAL_REACH_M.keys(),
+    *(f"{k}_link" for k in ARTERIAL_REACH_M),
+]
+
+# eyes_score: counts of nearby POIs / buildings within EYES_BUFFER_M of the edge
+# are passed through a saturating curve (1 - exp(-count / sat)) so the first few
+# matter most, then blended. POI (active frontage) is weighted above raw building
+# presence because a blank building wall provides far fewer "eyes" than a shop.
+EYES_BUFFER_M:    float = 30.0   # how far from the edge we look for frontage/buildings
+EYES_POI_SAT:     float = 3.0    # ~3 POIs nearby ≈ a lively block
+EYES_BLDG_SAT:    float = 10.0   # ~10 buildings nearby ≈ a fully built-up block
+EYES_W_POI:       float = 0.6    # POI (active frontage) weight  (POI + BLDG = 1.0)
+EYES_W_BLDG:      float = 0.4    # building (enclosure) weight
+EYES_ALLEY_FACTOR: float = 0.4   # multiplier for service=alley / back-alley edges
+
+# Confidence assigned to the environment factor. It is derived from dense OSM
+# data via a documented heuristic — more trustworthy than a guess, less than a
+# field survey. Used only as a near-tie breaker between routes (routing/router.py).
+ENV_CONFIDENCE: float = 0.7
 
 
 # Route-level aggregation exponent for the length-weighted power mean that

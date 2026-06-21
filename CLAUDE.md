@@ -11,6 +11,11 @@ pip install -e .
 # Download the base OSM walk graph for Boston (run once)
 python walkability/graph/download.py
 
+# Download the OSM feature inputs for the environment factor (run once):
+# arterials (incl. motorway/trunk, which the walk graph excludes), buildings,
+# shop/amenity POIs → data/osm/*.gpkg. Missing files just disable the factor.
+python walkability/graph/download_environment.py
+
 # Build the full enriched graph (skips rebuild if output already exists)
 python -m walkability.graph.build
 
@@ -107,13 +112,19 @@ Every tier produces a `FallbackResult` (defined in `walkability/osm/fallback.py`
 
 **Foot-access classification is one source of truth** in `scoring/factors.py`: `EXCLUDED_FOOT_ACCESS` (`foot=no` → impassable), `RESTRICTED_FOOT_ACCESS` (`private`/`customers`/`permit`/`residents`/… → walkable but penalised), and `FOOT_ACCESS_SCORE` (soft signal). `routing/cost.py` imports these sets so the hard routing rule and the soft score never drift apart. Boston OSM uses a wide access vocabulary (`customers` alone is ~1,100 edges) — add new values to these sets, not to scattered string checks.
 
-**`FACTOR_WEIGHTS` ordering is deliberate** (`scoring/weights.py`): `road_type=4.5` is set *just above* the combined surface weight (`surface_quality 2.0 + surface_material 2.0 = 4.0`), so the road type a pedestrian walks along is the single dominant signal but surface can still move the score. This was a deliberate correction from an earlier `road_type=3.0` (where the two surface factors collectively outvoted road type and inflated pristine sidewalks in hostile environments). Don't lower `road_type` back below the surface sum without re-checking the ground-truth survey. **Changing any weight requires a `--force` rebuild** to refresh the baked `walk_score` (the default-weight fast path), and re-baselining `notebooks/problem_routes_baseline.json`.
+**Two-level (HDI-style) scoring** (`scoring/factors.py::edge_walkability`, structure in `scoring/weights.py`): `walk_score` is built in two levels so a failure in one *dimension* of walking can't be bought back by excellence in another (a pristine surface must not rescue a walk along a highway):
+1. **Within a category** — a weighted **arithmetic** mean of the present factors (factors there are *substitutable*; e.g. good condition offsets so-so material). `FACTOR_WEIGHTS` are these **within-category** relative weights, renormalised over whatever factors are present.
+2. **Across categories** — an equal-weight **geometric** mean of the category values, each floored to `[CATEGORY_FLOOR, 1]` (default 0.15). Categories are *non-substitutable*; one weak category dominates. The floor stops a single zero category (motorway `road_type`, `foot=no`, on-arterial `environment`) from annihilating all discrimination — exactly as the Human Development Index bounds each dimension above zero.
+
+`CATEGORY_MAP` (`scoring/weights.py`) assigns each factor to one of three dimensions: **safety** (`environment`), **comfort** (`surface_quality`, `surface_material`, `surface_width`), **path** (`road_type`, `foot_access`). A new factor must be added to `CATEGORY_MAP` to count. A zero (UI-slider) weight drops the factor entirely; an all-empty category drops out of the geometric mean (never imputed). `confidence` stays a plain weight-weighted arithmetic mean (tiebreaker only — not geometric).
+
+This **supersedes** the earlier flat-mean tuning (where `road_type=4.5` sat just above the surface sum `4.0`): non-substitutability is now *structural*, so the cross-factor balance no longer lives in the weight numbers — they only set relative weight *within* a category. The two-level edge aggregate is a different axis from the route-level worst-segment power mean (`ROUTE_SCORE_EXPONENT`, across distance) — the two compose, don't duplicate. **Changing the structure or any weight requires a `--force` rebuild** to refresh the baked `walk_score` (the default-weight fast path), and re-baselining `notebooks/problem_routes_baseline.json`.
 
 ### Routing and scoring (query time)
 
 Composite scoring and routing live in `walkability/scoring/factors.py` and `walkability/routing/`. The flow for one query (`routing.router.find_routes(G, orig, dest, alpha=...)`):
 
-1. **Composite score** (`factors.edge_walkability`) — weighted mean of the present per-factor scores, **renormalised over whatever factors exist** so a missing surface score never penalises an edge. Returns `(walk_score, confidence)`, both [0,1]. This is also the boundary that **coerces GraphML strings** (`ox.load_graphml` returns custom fields as `"0.55"`, and `None` as a real `None`, an absent key, *or* the literal `"None"`) — use `_as_float`/`_as_str` rather than casting elsewhere.
+1. **Composite score** (`factors.edge_walkability`) — the two-level HDI-style aggregate (weighted-arithmetic within each `CATEGORY_MAP` category, floored, then equal-weight geometric mean across categories; see "Two-level scoring" above). Missing factors drop and weights renormalise so a missing score never penalises an edge. Returns `(walk_score, confidence)`, both [0,1]. This is also the boundary that **coerces GraphML strings** (`ox.load_graphml` returns custom fields as `"0.55"`, and `None` as a real `None`, an absent key, *or* the literal `"None"`) — use `_as_float`/`_as_str` rather than casting elsewhere.
 2. **Cost** (`routing/cost.py`) — `cost = length × (1 + α·(1 − walk_score))`. `α` is the single distance/walkability knob (0 = shortest path; higher = detour toward walkable edges). `foot=no` returns `None` (edge dropped); restricted access multiplies by `RESTRICTED_ACCESS_PENALTY` **except on terminal edges** — `edge_cost(is_terminal=True)` skips the penalty for an edge leaving the origin or entering the destination, since you'd legitimately use a customers-only path at your own endpoint (the "zoo entrance" case). `_routable_digraph` marks terminal edges via `u == o_node`/`v == d_node`. Both `edge_cost` and the projection take an optional `weights` dict (defaults to the `FACTOR_WEIGHTS` object for the baked fast path) that `find_routes` threads through from the UI sliders.
 3. **Spatial clip** (`routing/clip.py`) — clips the graph to an **ellipse with O and D as foci** before routing (`dist(O,n)+dist(n,D) ≤ budget`), so Yen's runs on a small local subgraph instead of all ~52k nodes. Node coords are cached on `G.graph`; snapping is a vectorised numpy `argmin`. **`find_routes` snaps with `snap_to_node(..., routable_only=True)`**: the geometrically nearest node to a real address is often a `foot=no` stub or a tiny disconnected footway fragment (e.g. an isolated pedestrian-bridge spur near the State House), which silently yields *zero routes*. `routable_only` restricts snapping to the **largest walkable connected component** (`clip._routable_mask`, built from non-`foot=no` edges and memoised on `G.graph`). The unrestricted default is unchanged so the `snap_to_node` invariant test still holds.
 4. **A\* + penalty-method alternatives** (`_collect_candidates`) — the (clipped) `MultiDiGraph` is projected to a simple `DiGraph` (cheapest parallel edge per `(u,v)`, remembering its `key`; foot=no excluded). The best route is found with **A\*** (`nx.astar_path`) using a haversine straight-line heuristic — admissible/consistent because `cost ≥ length ≥ straight-line` for any alpha/weights, so it's exact under the UI sliders. Alternatives come from the **penalty method**: a per-edge multiplier (`ALT_PENALTY`, passed via A*'s `weight` callback — DG is never mutated) inflates a found route's edges so the next A* run diverges; an alternative is kept only if its true cost is within `ALT_MAX_STRETCH` of the optimum. This replaced Yen's `nx.shortest_simple_paths`, which dominated long-route latency (≈2.4 s → ≈0.5 s at 5 km).
@@ -250,22 +261,36 @@ behaviours, several of them hard-won — **don't regress**:
   beds. When real additional areas/cities are added, promote it to a first-class
   control (and reconsider placement). Areas come from `DEV_REGIONS` in `build.py`.
 - Additional factors in `FACTOR_WEIGHTS` (`crossing_quality`, `poi_density`,
-  `elevation_change`) were removed — no enrichment tier produces that edge data
-  yet. Re-add a weight only alongside the edge field that feeds it.
+  `elevation_change`) remain removed — no enrichment tier produces that edge data
+  yet. Re-add a weight only alongside the edge field that feeds it. (`environment`
+  followed exactly this rule — it was added together with `graph/environment.py`,
+  which populates `environment_score`. `elevation_change` stays deferred until a
+  hilly target city, per `Research/break_research_2026-06-17.md` §2.3.)
+- **`environment` factor has no UI slider yet (TODO).** `environment` is a live
+  `FACTOR_WEIGHTS` factor and routes through `find_routes`/`edge_cost` already, but
+  it is **not** exposed as a per-factor weight slider in `app/streamlit_app.py`.
+  Adding it was deliberately deferred until the planned routing changes land — add
+  the slider then, mirroring the existing per-factor sliders.
 - Candidate changes from the 10-route ground-truth survey (logged in
   `notebooks/ground_truth.csv`), in rough priority. **Done:** the route-terminal
   restricted-access exemption (the "customer at your own destination" case — now in
   `edge_cost(is_terminal=...)` and `_build_route`). **Still open:** (2) a
   crossing/turn-minimisation objective; (3) an accessibility (step-free) toggle;
   (4) amenity/greenery and safety dimensions.
-- **Environment overrating (open).** The `road_type` weight was raised to 4.5
-  (slightly above the combined surface weight of 4.0), which improved arterial
-  avoidance but did **not** fix the
+- **Environment overrating (being addressed by the `environment` factor).** The
+  `road_type` weight was raised to 4.5 (slightly above the combined surface weight
+  of 4.0), which improved arterial avoidance but did **not** fix the
   newmarket-style overrating: industrial streets tagged `highway=residential`
   get `highway_score=0.55` (not low enough) and pristine surfaces still pull the
-  composite up. The real fix is a `HIGHWAY_SCORES` value adjustment or a new
-  environment/arterial-proximity factor — a weight tweak alone cannot fix a
-  `highway_score` *value* that is too high for the actual environment.
+  composite up. As concluded, a weight tweak alone cannot fix a `highway_score`
+  *value* too high for the actual environment — the fix is a **new edge feature**.
+  That feature is now the `environment` factor (`scoring/weights.py` weight 3.0 +
+  `graph/environment.py`): `environment_score = sqrt(arterial_proximity × eyes)` —
+  car-hostility (distance to a real arterial, incl. motorway/trunk the walk graph
+  omits) combined geometric-mean with "eyes on the street" (frontage + enclosure).
+  **Still to do:** calibrate the weight (start 3.0) and the `eyes_score` formula
+  against `notebooks/ground_truth.csv` (Newmarket should drop, Beacon Hill hold),
+  then `--force` rebuild + re-baseline.
 
 ### Dev workflow note
 
