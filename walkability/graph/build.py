@@ -20,6 +20,11 @@ Output schema (per edge)
   surface_score          float|None    Structural condition score (SCI/100 from city, or OSM surface fallback)
   surface_material_score float|None    Intrinsic comfort score from material type (city MATERIAL or OSM surface tag)
   surface_confidence     float|None    Certainty about surface_score
+  width_score              float|None  Sidewalk-width Comfort sub-score (from sidewalk_width_ft)
+  environment_score        float|None  Arterial proximity × eyes-on-street (graph/environment.py)
+  arterial_proximity_score float|None  Car-safety sub-signal (0 on an arterial → 1 far away)
+  eyes_score               float|None  Perceived-safety sub-signal (frontage + enclosure)
+  environment_confidence   float|None  Certainty about environment_score
   walk_score             float [0,1]   Composite walkability at DEFAULT weights (routing fast path)
   walk_confidence        float [0,1]   Composite confidence at DEFAULT weights
   foot_access            str|None      "yes" / "no" / "private" / None
@@ -56,10 +61,15 @@ import osmnx as ox
 import pandas as pd
 
 from walkability.config import OSM_DIR, DATA_DIR
+from walkability.graph.environment import build_environment_index
 from walkability.osm.fallback import get_fallback
 from walkability.osm.tag_resolver import resolve_edge_tags
 from walkability.scoring.factors import edge_walkability
-from walkability.scoring.weights import SURFACE_SCORES
+from walkability.scoring.weights import (
+    SIDEWALK_WIDTH_GOOD_FT,
+    SIDEWALK_WIDTH_MIN_FT,
+    SURFACE_SCORES,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -371,6 +381,20 @@ def _condition_to_score(raw_condition: Any) -> float | None:
         return None
 
 
+def _width_to_score(width_ft: float | None) -> float | None:
+    """Map a sidewalk width (feet) to a [0, 1] Comfort sub-score.
+
+    Linear ramp between SIDEWALK_WIDTH_MIN_FT (→0) and SIDEWALK_WIDTH_GOOD_FT
+    (→1). Returns None for missing / non-positive widths so the factor drops out
+    rather than penalising an edge with no width data.
+    """
+    if width_ft is None or width_ft <= 0.0:
+        return None
+    span = SIDEWALK_WIDTH_GOOD_FT - SIDEWALK_WIDTH_MIN_FT
+    score = (width_ft - SIDEWALK_WIDTH_MIN_FT) / span if span > 0 else 1.0
+    return round(min(1.0, max(0.0, score)), 4)
+
+
 def _surface_label_to_score(raw_surface: Any) -> float | None:
     """Map a surface material to a [0, 1] score via SURFACE_SCORES.
 
@@ -535,6 +559,7 @@ def _build_canonical_schema(
     raw_data:   dict,
     fallback:   Any,           # FallbackResult
     city_row:   pd.Series | None,
+    env:        dict | None = None,
 ) -> dict:
     """Produce the canonical attribute dict for one edge.
 
@@ -605,6 +630,16 @@ def _build_canonical_schema(
         "surface_material_score":  round(surface_material_score, 4) if surface_material_score is not None else None,
         "surface_confidence":      round(surface_confidence, 4) if surface_confidence is not None else None,
 
+        # Comfort: sidewalk room from city width data (None where unknown).
+        "width_score":             _width_to_score(sidewalk_width_ft),
+
+        # Environment (arterial proximity × eyes-on-street; graph/environment.py).
+        # Absent when feature inputs weren't available — the factor then drops out.
+        "environment_score":        (env or {}).get("environment_score"),
+        "arterial_proximity_score": (env or {}).get("arterial_proximity_score"),
+        "eyes_score":               (env or {}).get("eyes_score"),
+        "environment_confidence":   (env or {}).get("environment_confidence"),
+
         # Categorical
         "foot_access":            foot_access,
         "is_pedestrian_dedicated": fallback.is_pedestrian_dedicated,
@@ -647,6 +682,7 @@ def build_edge_schema(
     Modifies G in-place and returns it.
     """
     city_matches = _build_spatial_index(G, sidewalks)
+    env_matches  = build_environment_index(G)
 
     print("Enriching edges ...")
     n_edges   = G.number_of_edges()
@@ -662,7 +698,8 @@ def build_edge_schema(
         resolved  = resolve_edge_tags(data)
         fallback  = get_fallback(resolved, G=G, u=u, v=v, key=key)
         city_row  = city_matches.get((u, v, key))
-        schema    = _build_canonical_schema(data, fallback, city_row)
+        env       = env_matches.get((u, v, key))
+        schema    = _build_canonical_schema(data, fallback, city_row, env)
 
         G[u][v][key].update(schema)
 
