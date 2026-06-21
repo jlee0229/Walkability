@@ -23,9 +23,10 @@ another (a pristine surface must not rescue a walk along a highway):
   1. WITHIN a category (``CATEGORY_MAP``) — a weighted ARITHMETIC mean of the
      present factors (factors there are substitutable), clamped to
      [``CATEGORY_FLOOR``, 1].
-  2. ACROSS categories — an equal-weight GEOMETRIC mean of the category values
-     (categories are non-substitutable; one weak category dominates). The floor
-     keeps a single zero category from annihilating all discrimination.
+  2. ACROSS categories — an importance-weighted (``CATEGORY_WEIGHTS``) GEOMETRIC
+     mean of the category values (categories are non-substitutable; one weak
+     category dominates, and Safety/Path outweigh Comfort). The floor keeps a
+     single zero category from annihilating all discrimination.
 
 Missing factors are dropped and the within-category weights renormalised over
 whatever is present; an entirely-empty category is dropped from the geometric
@@ -42,7 +43,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from walkability.scoring.weights import CATEGORY_FLOOR, CATEGORY_MAP, FACTOR_WEIGHTS
+from walkability.scoring.weights import (
+    CATEGORY_FLOOR,
+    CATEGORY_MAP,
+    CATEGORY_WEIGHTS,
+    FACTOR_WEIGHTS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -130,54 +136,15 @@ _EMPTY_WALK: float = 0.40
 _EMPTY_CONFIDENCE: float = 0.10
 
 
-def edge_walkability(
-    edge: dict,
-    weights: dict[str, float] = FACTOR_WEIGHTS,
-) -> tuple[float, float]:
-    """Combine an edge's metrics into ``(walk_score, confidence)`` in [0, 1].
+def _edge_contributions(
+    edge: dict, weights: dict[str, float]
+) -> list[tuple[str, float, float, float]]:
+    """Per-factor ``(key, value, weight, confidence)`` for the present factors.
 
-    Parameters
-    ----------
-    edge :
-        An edge-attribute dict as stored on the enriched graph
-        (``G[u][v][key]``). Reads ``highway_score``, ``highway_confidence``,
-        ``surface_score``, ``surface_material_score``, ``surface_confidence``,
-        ``environment_score``, ``environment_confidence`` and ``foot_access``.
-        Any of the surface/environment/foot fields may be ``None``.
-    weights :
-        Relative factor weights. Defaults to ``FACTOR_WEIGHTS``; pass an
-        override (e.g. from UI sliders) to re-weight without rebuilding.
-
-    Reads ``highway_score``/``highway_confidence``, ``surface_score``,
-    ``surface_material_score``, ``width_score``, ``surface_confidence``,
-    ``environment_score``/``environment_confidence`` and ``foot_access``.
-
-    Returns
-    -------
-    (walk_score, confidence) :
-        Both length-independent and in [0, 1]. ``walk_score`` is the two-level
-        aggregate (weighted arithmetic mean within each category of
-        ``CATEGORY_MAP``, floored to ``CATEGORY_FLOOR``, then an equal-weight
-        geometric mean across the present categories). ``confidence`` is a plain
-        weight-weighted arithmetic mean of the present factors' confidences.
-
-    Fast path
-    ---------
-    When called with the default weights (the literal ``FACTOR_WEIGHTS``
-    object), a precomputed ``walk_score``/``walk_confidence`` baked onto the
-    edge by graph/build.py is used directly — skipping all string parsing and
-    the weighted combine. Passing any other ``weights`` object (e.g. from UI
-    sliders) forces a full recompute, so re-weighting without a rebuild still
-    works. Edges built before the bake simply lack the field and recompute.
+    The single place edge fields are read into scoring — shared by
+    ``edge_walkability`` and ``edge_category_scores`` so they never drift.
+    Zero/negative-weight factors are dropped (a UI slider at 0 = "ignore it").
     """
-    if weights is FACTOR_WEIGHTS:
-        cached = _as_float(edge.get("walk_score"))
-        if cached is not None:
-            conf = _as_float(edge.get("walk_confidence"))
-            return cached, conf if conf is not None else _EMPTY_CONFIDENCE
-
-    # Each entry: (factor_key, value, weight, confidence). Only factors with real
-    # data are appended, so absent factors drop out entirely.
     contributions: list[tuple[str, float, float, float]] = []
 
     highway_score = _as_float(edge.get("highway_score"))
@@ -214,33 +181,108 @@ def edge_walkability(
         # foot access is an explicit categorical tag — confident when present.
         contributions.append(("foot_access", foot_value, weights.get("foot_access", 0.0), 1.0))
 
-    # A zero (or negative) weight means "ignore this factor" — e.g. a UI slider
-    # dragged to 0. Drop it so it neither moves its category nor counts toward
-    # confidence (matches the old behaviour where a 0 weight cancelled out).
-    contributions = [c for c in contributions if c[2] > 0.0]
-    if not contributions:
-        return _EMPTY_WALK, _EMPTY_CONFIDENCE
+    return [c for c in contributions if c[2] > 0.0]
 
-    # Level 1: weighted ARITHMETIC mean within each category, floored to
-    # [CATEGORY_FLOOR, 1]. Factors with no mapped category are skipped (a new
-    # factor must be added to CATEGORY_MAP to count).
+
+def _category_values(
+    contributions: list[tuple[str, float, float, float]]
+) -> dict[str, float]:
+    """Level-1 aggregate: floored weighted-arithmetic mean within each category.
+
+    Factors with no mapped category (``CATEGORY_MAP``) are skipped — a new factor
+    must be added to the map to count.
+    """
     cat_factors: dict[str, list[tuple[float, float]]] = {}
     for key, value, w, _ in contributions:
         category = CATEGORY_MAP.get(key)
         if category is not None:
             cat_factors.setdefault(category, []).append((value, w))
 
-    category_values: list[float] = []
-    for items in cat_factors.values():
+    out: dict[str, float] = {}
+    for category, items in cat_factors.items():
         tw = sum(w for _, w in items)
         cat_mean = sum(v * w for v, w in items) / tw  # tw > 0: zero-weight dropped above
-        category_values.append(min(1.0, max(CATEGORY_FLOOR, cat_mean)))
+        out[category] = min(1.0, max(CATEGORY_FLOOR, cat_mean))
+    return out
 
+
+def edge_category_scores(
+    edge: dict, weights: dict[str, float] = FACTOR_WEIGHTS
+) -> dict[str, float]:
+    """The floored per-category (safety/comfort/path) values for one edge.
+
+    The Level-1 half of ``edge_walkability``, exposed for diagnostics and
+    calibration (e.g. notebooks/calibration_survey.py) so the cross-category
+    geometric mean can be inspected dimension by dimension. Absent categories are
+    omitted. Does not use the baked fast path.
+    """
+    return _category_values(_edge_contributions(edge, weights))
+
+
+def edge_walkability(
+    edge: dict,
+    weights: dict[str, float] = FACTOR_WEIGHTS,
+) -> tuple[float, float]:
+    """Combine an edge's metrics into ``(walk_score, confidence)`` in [0, 1].
+
+    Parameters
+    ----------
+    edge :
+        An edge-attribute dict as stored on the enriched graph
+        (``G[u][v][key]``). Reads ``highway_score``, ``highway_confidence``,
+        ``surface_score``, ``surface_material_score``, ``surface_confidence``,
+        ``environment_score``, ``environment_confidence`` and ``foot_access``.
+        Any of the surface/environment/foot fields may be ``None``.
+    weights :
+        Relative factor weights. Defaults to ``FACTOR_WEIGHTS``; pass an
+        override (e.g. from UI sliders) to re-weight without rebuilding.
+
+    Reads ``highway_score``/``highway_confidence``, ``surface_score``,
+    ``surface_material_score``, ``width_score``, ``surface_confidence``,
+    ``environment_score``/``environment_confidence`` and ``foot_access``.
+
+    Returns
+    -------
+    (walk_score, confidence) :
+        Both length-independent and in [0, 1]. ``walk_score`` is the two-level
+        aggregate (weighted arithmetic mean within each category of
+        ``CATEGORY_MAP``, floored to ``CATEGORY_FLOOR``, then an importance-weighted
+        (``CATEGORY_WEIGHTS``) geometric mean across the present categories).
+        ``confidence`` is a plain
+        weight-weighted arithmetic mean of the present factors' confidences.
+
+    Fast path
+    ---------
+    When called with the default weights (the literal ``FACTOR_WEIGHTS``
+    object), a precomputed ``walk_score``/``walk_confidence`` baked onto the
+    edge by graph/build.py is used directly — skipping all string parsing and
+    the weighted combine. Passing any other ``weights`` object (e.g. from UI
+    sliders) forces a full recompute, so re-weighting without a rebuild still
+    works. Edges built before the bake simply lack the field and recompute.
+    """
+    if weights is FACTOR_WEIGHTS:
+        cached = _as_float(edge.get("walk_score"))
+        if cached is not None:
+            conf = _as_float(edge.get("walk_confidence"))
+            return cached, conf if conf is not None else _EMPTY_CONFIDENCE
+
+    # Read present factors (drops zero-weight) — shared with edge_category_scores.
+    contributions = _edge_contributions(edge, weights)
+    if not contributions:
+        return _EMPTY_WALK, _EMPTY_CONFIDENCE
+
+    # Level 1: floored weighted-arithmetic mean within each category.
+    category_values = _category_values(contributions)
     if not category_values:
         return _EMPTY_WALK, _EMPTY_CONFIDENCE
 
-    # Level 2: equal-weight GEOMETRIC mean across the present categories.
-    walk = math.exp(sum(math.log(c) for c in category_values) / len(category_values))
+    # Level 2: importance-WEIGHTED (CATEGORY_WEIGHTS) GEOMETRIC mean across the
+    # present categories. Absent categories simply don't contribute.
+    cat_wsum = sum(CATEGORY_WEIGHTS.get(c, 1.0) for c in category_values)
+    walk = math.exp(
+        sum(CATEGORY_WEIGHTS.get(c, 1.0) * math.log(v) for c, v in category_values.items())
+        / cat_wsum
+    )
 
     # Confidence stays a plain weight-weighted arithmetic mean (tiebreaker only).
     total_weight = sum(w for _, _, w, _ in contributions)
