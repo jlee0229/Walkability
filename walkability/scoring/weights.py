@@ -112,11 +112,12 @@ HIGHWAY_DISTINCTIVENESS: dict[str, float] = {
 #      Factors in the same category are SUBSTITUTABLE (good structural condition
 #      offsets so-so material). FACTOR_WEIGHTS below are these WITHIN-category
 #      relative weights, renormalised over whatever factors are present.
-#   2. ACROSS categories — an equal-weight GEOMETRIC mean of the category values,
-#      each floored to [CATEGORY_FLOOR, 1]. Categories are NON-SUBSTITUTABLE, so a
-#      single weak category dominates. The floor stops one zero category (motorway
-#      road_type, foot=no, on-arterial environment) from annihilating all
-#      discrimination — exactly as HDI bounds each dimension above zero.
+#   2. ACROSS categories — an importance-WEIGHTED (CATEGORY_WEIGHTS) GEOMETRIC
+#      mean of the category values, each floored to [CATEGORY_FLOOR, 1].
+#      Categories are NON-SUBSTITUTABLE, so a single weak category dominates. The
+#      floor stops one zero category (motorway road_type, foot=no, on-arterial
+#      environment) from annihilating all discrimination — exactly as HDI bounds
+#      each dimension above zero.
 #
 # CATEGORY_MAP assigns every factor to one of three dimensions — "Will I be safe,
 # will it be easy, is it a real walking route?":
@@ -164,8 +165,23 @@ CATEGORY_MAP: dict[str, str] = {
 
 # Lower bound on a category value before the cross-category geometric mean, so a
 # single zero category punishes hard without zeroing the whole score. STARTING
-# value — tune against notebooks/ground_truth.csv.
+# value — tune against notebooks/ground_truth.csv. NOTE: this is the zero-collapse
+# safety valve, NOT an importance dial — to make a category matter more/less use
+# CATEGORY_WEIGHTS below (a high floor would clip and destroy discrimination).
 CATEGORY_FLOOR: float = 0.15
+
+# Cross-category IMPORTANCE weights for the geometric mean. Only RATIOS matter;
+# equal weights reproduce a plain (HDI-style) geometric mean. Per ground-truth:
+# Safety = Path legitimacy ≥ Comfort. Safety is deliberately NOT set above Path —
+# over-indexing on safety is the classic failure of prior walkability models (a
+# calm dangerous-looking street still gets you there), and safety/path already
+# share a car-danger signal so up-weighting safety would double-count it. Comfort
+# is the gradient "nice-to-have". Tune against notebooks/ground_truth.csv.
+CATEGORY_WEIGHTS: dict[str, float] = {
+    "safety":  1.0,
+    "path":    1.0,
+    "comfort": 0.7,
+}
 
 # Sidewalk width → comfort score ramp (feet). Below MIN ≈ no buffer / forced
 # single-file; at/above GOOD ≈ comfortable two-abreast. Linear between. From the
@@ -182,10 +198,11 @@ SIDEWALK_WIDTH_GOOD_FT: float = 8.0   # ramp end   → score 1.0
 # GEOMETRIC mean so the composite is high only when BOTH are high (a quiet street
 # next to an expressway, or a back alley with no eyes, both collapse toward 0):
 #
-#   1. arterial_proximity_score — car safety. 0 on/adjacent to a high-speed
-#      arterial, ramping to 1 beyond that arterial class's reach. The walk graph
-#      EXCLUDES motorway/trunk, so arterial geometry is pulled separately
-#      (graph/download_environment.py).
+#   1. arterial_proximity_score — car safety. Class-floored on/adjacent to the
+#      arterial (0 for a motorway, ~0.45 for a calm secondary), ramping to 1
+#      beyond its reach; pedestrian-dedicated ways are exempt (PED_ARTERIAL_FLOOR).
+#      The walk graph EXCLUDES motorway/trunk, so arterial geometry is pulled
+#      separately (graph/download_environment.py).
 #   2. eyes_score — perceived social safety ("eyes on the street", Jacobs).
 #      Driven by active frontage (shops/amenities) and built enclosure
 #      (buildings) near the edge, knocked down for back-alley geometry.
@@ -194,32 +211,52 @@ SIDEWALK_WIDTH_GOOD_FT: float = 8.0   # ramp end   → score 1.0
 # particular needs tuning against notebooks/ground_truth.csv, since OSM does not
 # cheaply expose building-entrance orientation.
 
-# Arterial classes and the distance (metres) over which each stops mattering.
-# A pedestrian feels a motorway/expressway from much further than a secondary
-# road, so the reach is class-scaled. _link ramps inherit their base class's
-# reach (resolved in graph/environment.py).
-ARTERIAL_REACH_M: dict[str, float] = {
-    "motorway":  150.0,
-    "trunk":     150.0,
-    "primary":   100.0,
-    "secondary":  80.0,
+# Arterial classes → (reach_m, floor). REACH = distance over which the road stops
+# mattering. FLOOR = arterial_proximity_score when you're right on it — NOT every
+# arterial is equally hostile: a motorway is a wall of fast traffic (floor 0), but
+# a secondary urban street (Newbury, Tremont, Comm Ave) is calm enough to walk
+# along (floor ~0.45), so it should not crater car-safety the way the old "0 on
+# any arterial" rule did. This was the dominant calibration error: beloved walks
+# (Comm Ave Mall) scored arterial≈0.09 purely from a nearby secondary roadway.
+# Until a real traffic-SPEED factor exists, the floor encodes class-as-speed-proxy.
+# _link ramps inherit their base class (resolved in graph/environment.py).
+ARTERIAL_CLASSES: dict[str, tuple[float, float]] = {
+    "motorway":  (150.0, 0.00),
+    "trunk":     (150.0, 0.00),
+    "primary":   (80.0,  0.25),
+    "secondary": (50.0,  0.45),
 }
+
+# A pedestrian-DEDICATED way is physically protected from traffic, so a nearby
+# CALM road shouldn't crush its car-safety (the Paul Revere Footpath scored 0.10):
+# such edges get at least this arterial_proximity_score floor. BUT the exemption
+# only applies next to a calm arterial (secondary or quieter, floor ≥
+# PED_EXEMPT_MIN_FLOOR) — a footway hugging a roaring primary/expressway still
+# feels the traffic (Newmarket's HarborWalk-style paths were over-credited).
+PED_ARTERIAL_FLOOR: float = 0.6
+PED_EXEMPT_MIN_FLOOR: float = 0.45
+PEDESTRIAN_HIGHWAYS: frozenset[str] = frozenset({
+    "pedestrian", "footway", "path", "steps", "living_street",
+})
 
 # OSM highway tag values to pull as "arterials" (base classes + their link ramps).
 ARTERIAL_HIGHWAY_TAGS: list[str] = [
-    *ARTERIAL_REACH_M.keys(),
-    *(f"{k}_link" for k in ARTERIAL_REACH_M),
+    *ARTERIAL_CLASSES.keys(),
+    *(f"{k}_link" for k in ARTERIAL_CLASSES),
 ]
 
 # eyes_score: counts of nearby POIs / buildings within EYES_BUFFER_M of the edge
 # are passed through a saturating curve (1 - exp(-count / sat)) so the first few
-# matter most, then blended. POI (active frontage) is weighted above raw building
-# presence because a blank building wall provides far fewer "eyes" than a shop.
+# matter most, then blended. BUILDING presence now leads (and saturates sooner):
+# a residential neighbourhood with homes facing the street feels watched and safe
+# even with no shops — the old POI-led weighting under-scored exactly those
+# (ground truth: residential blocks felt safer than the model said). POIs remain a
+# bonus on top for active commercial frontage.
 EYES_BUFFER_M:    float = 30.0   # how far from the edge we look for frontage/buildings
 EYES_POI_SAT:     float = 3.0    # ~3 POIs nearby ≈ a lively block
-EYES_BLDG_SAT:    float = 10.0   # ~10 buildings nearby ≈ a fully built-up block
-EYES_W_POI:       float = 0.6    # POI (active frontage) weight  (POI + BLDG = 1.0)
-EYES_W_BLDG:      float = 0.4    # building (enclosure) weight
+EYES_BLDG_SAT:    float = 7.0    # ~7 buildings nearby ≈ a built-up residential block
+EYES_W_POI:       float = 0.45   # POI (active frontage) weight  (POI + BLDG = 1.0)
+EYES_W_BLDG:      float = 0.55   # building (enclosure / homes = eyes) weight
 EYES_ALLEY_FACTOR: float = 0.4   # multiplier for service=alley / back-alley edges
 
 # Confidence assigned to the environment factor. It is derived from dense OSM

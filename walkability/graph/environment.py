@@ -45,7 +45,7 @@ import pandas as pd
 
 from walkability.config import OSM_DIR
 from walkability.scoring.weights import (
-    ARTERIAL_REACH_M,
+    ARTERIAL_CLASSES,
     ENV_CONFIDENCE,
     EYES_ALLEY_FACTOR,
     EYES_BLDG_SAT,
@@ -53,6 +53,9 @@ from walkability.scoring.weights import (
     EYES_POI_SAT,
     EYES_W_BLDG,
     EYES_W_POI,
+    PED_ARTERIAL_FLOOR,
+    PED_EXEMPT_MIN_FLOOR,
+    PEDESTRIAN_HIGHWAYS,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,9 +77,11 @@ METRIC_CRS = "EPSG:32619"
 # not underestimated at the subset boundary.
 AREA_MARGIN_M: float = 250.0
 
-# Smallest arterial reach — fallback for an arterial whose class we can't resolve
-# (shouldn't happen, since we only pull ARTERIAL_HIGHWAY_TAGS).
-_DEFAULT_REACH_M: float = min(ARTERIAL_REACH_M.values())
+# Fallback (reach, floor) for an arterial whose class we can't resolve (shouldn't
+# happen — we only pull ARTERIAL_HIGHWAY_TAGS). Use the most lenient class.
+_DEFAULT_CLASS: tuple[float, float] = min(
+    ARTERIAL_CLASSES.values(), key=lambda rf: rf[0]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,26 +115,37 @@ def load_pois() -> gpd.GeoDataFrame:
 # Scalar score helpers (parameters from scoring/weights.py)
 # ---------------------------------------------------------------------------
 
-def _arterial_reach(highway) -> float | None:
-    """Reach (m) for an arterial's ``highway`` tag, or None if not an arterial.
+def _arterial_class(highway) -> tuple[float, float] | None:
+    """``(reach_m, floor)`` for an arterial's ``highway`` tag, or None.
 
-    ``_link`` ramps inherit their base class's reach. Multi-valued tags take the
-    longest reach (the most hostile class present).
+    ``_link`` ramps inherit their base class. Multi-valued tags take the most
+    hostile class present (the lowest floor).
     """
     if isinstance(highway, (list, tuple)):
-        reaches = [r for r in (_arterial_reach(h) for h in highway) if r is not None]
-        return max(reaches) if reaches else None
+        cands = [rf for rf in (_arterial_class(h) for h in highway) if rf is not None]
+        return min(cands, key=lambda rf: rf[1]) if cands else None
     if not isinstance(highway, str):
         return None
     base = highway[:-5] if highway.endswith("_link") else highway
-    return ARTERIAL_REACH_M.get(base)
+    return ARTERIAL_CLASSES.get(base)
 
 
-def arterial_proximity_score(distance_m: float, reach_m: float) -> float:
-    """0 on/adjacent to the arterial, ramping linearly to 1 at its reach."""
+def arterial_proximity_score(distance_m: float, reach_m: float, floor: float) -> float:
+    """``floor`` on/adjacent to the arterial, ramping linearly to 1 at its reach.
+
+    ``floor`` is class-dependent (0 for a motorway, ~0.45 for a calm secondary):
+    being beside a secondary street is unpleasant, not life-threatening.
+    """
     if reach_m <= 0:
         return 1.0
-    return max(0.0, min(1.0, distance_m / reach_m))
+    ramp = max(0.0, min(1.0, distance_m / reach_m))
+    return floor + (1.0 - floor) * ramp
+
+
+def _is_pedestrian(highway) -> bool:
+    """True if the edge itself is a pedestrian-DEDICATED way (protected from cars)."""
+    vals = highway if isinstance(highway, (list, tuple)) else [highway]
+    return any(v in PEDESTRIAN_HIGHWAYS for v in vals)
 
 
 def eyes_score(poi_count: int, bldg_count: int, *, is_alley: bool) -> float:
@@ -209,7 +225,11 @@ def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     index: dict[tuple, dict] = {}
     for eid, hwy, svc in zip(edges_metric["edge_id"], edges_metric["highway"], service_col):
         is_alley = _is_alley(hwy, svc)
-        a = art_scores.get(eid, 1.0)                 # no arterial nearby → safe
+        a, near_floor = art_scores.get(eid, (1.0, 1.0))   # no arterial nearby → safe
+        # Protected-path exemption, but only beside a CALM road (a footway hugging
+        # a primary/expressway still feels the traffic).
+        if _is_pedestrian(hwy) and near_floor >= PED_EXEMPT_MIN_FLOOR:
+            a = max(a, PED_ARTERIAL_FLOOR)
         e = eyes_score(poi_counts.get(eid, 0),
                        bldg_counts.get(eid, 0),
                        is_alley=is_alley)
@@ -232,24 +252,29 @@ def _arterial_scores(
         return {}
 
     art = arterials.copy()
-    art["reach"] = art["highway"].map(
-        lambda h: _arterial_reach(h) or _DEFAULT_REACH_M
-    )
+    classes = art["highway"].map(lambda h: _arterial_class(h) or _DEFAULT_CLASS)
+    art["reach"] = [rf[0] for rf in classes]
+    art["floor"] = [rf[1] for rf in classes]
     joined = gpd.sjoin_nearest(
         edges_metric[["edge_id", "geometry"]],
-        art[["geometry", "reach"]],
+        art[["geometry", "reach", "floor"]],
         how="left",
         distance_col="dist",
     )
     # Ties (equidistant arterials) yield multiple rows — keep the nearest.
     joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
 
-    scores: dict[tuple, float] = {}
-    for eid, dist, reach in zip(joined["edge_id"], joined["dist"], joined["reach"]):
+    scores: dict[tuple, tuple[float, float]] = {}
+    for eid, dist, reach, floor in zip(
+        joined["edge_id"], joined["dist"], joined["reach"], joined["floor"]
+    ):
         if pd.isna(dist) or pd.isna(reach):
-            scores[eid] = 1.0
+            scores[eid] = (1.0, 1.0)
         else:
-            scores[eid] = arterial_proximity_score(float(dist), float(reach))
+            # store (proximity score, nearest arterial's class floor) — the floor
+            # gates the pedestrian exemption in build_environment_index.
+            scores[eid] = (arterial_proximity_score(float(dist), float(reach), float(floor)),
+                           float(floor))
     return scores
 
 

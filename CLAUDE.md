@@ -114,7 +114,7 @@ Every tier produces a `FallbackResult` (defined in `walkability/osm/fallback.py`
 
 **Two-level (HDI-style) scoring** (`scoring/factors.py::edge_walkability`, structure in `scoring/weights.py`): `walk_score` is built in two levels so a failure in one *dimension* of walking can't be bought back by excellence in another (a pristine surface must not rescue a walk along a highway):
 1. **Within a category** — a weighted **arithmetic** mean of the present factors (factors there are *substitutable*; e.g. good condition offsets so-so material). `FACTOR_WEIGHTS` are these **within-category** relative weights, renormalised over whatever factors are present.
-2. **Across categories** — an equal-weight **geometric** mean of the category values, each floored to `[CATEGORY_FLOOR, 1]` (default 0.15). Categories are *non-substitutable*; one weak category dominates. The floor stops a single zero category (motorway `road_type`, `foot=no`, on-arterial `environment`) from annihilating all discrimination — exactly as the Human Development Index bounds each dimension above zero.
+2. **Across categories** — an importance-weighted (`CATEGORY_WEIGHTS`) **geometric** mean of the category values, each floored to `[CATEGORY_FLOOR, 1]` (default 0.15). Categories are *non-substitutable*; one weak category dominates, and Safety/Path outweigh Comfort (starting ratios 1.4 / 1.0 / 0.6). The floor stops a single zero category (motorway `road_type`, `foot=no`, on-arterial `environment`) from annihilating all discrimination — exactly as the Human Development Index bounds each dimension above zero. `CATEGORY_WEIGHTS` express *importance* (symmetric); `CATEGORY_FLOOR` is only the zero-collapse valve, **not** an importance dial (a high floor would clip and lose discrimination).
 
 `CATEGORY_MAP` (`scoring/weights.py`) assigns each factor to one of three dimensions: **safety** (`environment`), **comfort** (`surface_quality`, `surface_material`, `surface_width`), **path** (`road_type`, `foot_access`). A new factor must be added to `CATEGORY_MAP` to count. A zero (UI-slider) weight drops the factor entirely; an all-empty category drops out of the geometric mean (never imputed). `confidence` stays a plain weight-weighted arithmetic mean (tiebreaker only — not geometric).
 
@@ -152,6 +152,7 @@ These are dev/QA scripts, not part of the package. They import each other as sib
 - `verify_system.py` — automated invariants (see Commands).
 - `region_maps.py` / `build_problem_route_maps.py` — batch HTML map generators.
 - `test_route.py` — single edit-the-top-and-run route tester.
+- `calibration_survey.py` — generates `calibration_survey.html`: a hand-picked set of routes across Boston's walkability spectrum, each as a zoomed map with numbered per-segment colouring, the per-DIMENSION breakdown (safety/comfort/path via `edge_category_scores`), Street View links, and the calibration questions. The tool for collecting `subj_walkability` ground truth to tune `CATEGORY_WEIGHTS` / `CATEGORY_FLOOR` / the `environment` constants.
 - `ground_truth.csv` (+ `.README.md`) — region-tagged manual observation log; the human-judgment side of verification (subjective walkability, real surface/condition, route quality). `Research/work_and_verification_outline.md` explains the invariants-vs-validity boundary (what can/can't be automated).
 
 **Crossings are unscored.** They exist only as `highway=crossing` nodes; the edge-cost router ignores node attributes, and there is no crossing factor in `FACTOR_WEIGHTS`. `audit_route`'s crossing count is informational, not a score input.
@@ -284,13 +285,23 @@ behaviours, several of them hard-won — **don't regress**:
   get `highway_score=0.55` (not low enough) and pristine surfaces still pull the
   composite up. As concluded, a weight tweak alone cannot fix a `highway_score`
   *value* too high for the actual environment — the fix is a **new edge feature**.
-  That feature is now the `environment` factor (`scoring/weights.py` weight 3.0 +
-  `graph/environment.py`): `environment_score = sqrt(arterial_proximity × eyes)` —
-  car-hostility (distance to a real arterial, incl. motorway/trunk the walk graph
-  omits) combined geometric-mean with "eyes on the street" (frontage + enclosure).
-  **Still to do:** calibrate the weight (start 3.0) and the `eyes_score` formula
-  against `notebooks/ground_truth.csv` (Newmarket should drop, Beacon Hill hold),
-  then `--force` rebuild + re-baseline.
+  That feature is the `environment` factor (`graph/environment.py`):
+  `environment_score = sqrt(arterial_proximity × eyes)` — car-hostility combined
+  geometric-mean with "eyes on the street". It lives in the **safety** category of
+  the two-level score (see "Two-level scoring"), not a flat weight.
+  **Calibrated (Boston 10-route survey, `notebooks/calibration_survey.py` →
+  `ground_truth.csv`):** arterial proximity uses per-class **floors**
+  (`ARTERIAL_CLASSES`: motorway 0.0 … secondary 0.45) so a calm urban street isn't
+  scored like an expressway; a **pedestrian-dedicated exemption**
+  (`PED_ARTERIAL_FLOOR`, gated to footways beside calm roads) protects separated
+  paths; `eyes` is **building-presence-led** so residential reads as watched
+  without shops; `CATEGORY_WEIGHTS` set safety = path > comfort. This moved the
+  survey routes onto their human targets (Back Bay 54→85, South End 58→79,
+  Newmarket held low at 49). **Known residuals (NOT weight bugs):** Seaport
+  under-scores (open waterfront safe via pedestrian volume / openness — a missing
+  signal the building/POI eyes-proxy can't see); Newmarket's remaining gap is its
+  origin-snapping onto the primary + a `surf=0.00` data anomaly. To re-tune:
+  regenerate the survey, compare to `ground_truth.csv`, `--force` rebuild + re-baseline.
 
 ### Dev workflow note
 
