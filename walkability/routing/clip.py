@@ -33,15 +33,24 @@ import math
 import networkx as nx
 import numpy as np
 
-from walkability.scoring.factors import EXCLUDED_FOOT_ACCESS, _as_str
+from walkability.scoring.factors import EXCLUDED_FOOT_ACCESS, _as_float, _as_str
 
 # Clip tuning ---------------------------------------------------------------
 DETOUR_FACTOR_DEFAULT: float = 1.5    # ellipse budget = this × O–D distance ...
 MIN_BUFFER_M:          float = 400.0  # ... but never tighter than O–D + this
 EARTH_RADIUS_M:        float = 6_371_000.0
 
+# Walkability-biased snapping: an address snaps to the node minimising
+# dist_m + (1 − highway_score)·SNAP_WALK_BIAS_M, so it prefers a sidewalk/footway
+# a little farther over an arterial centreline right next to it (which would force
+# the route to start ON the arterial). ~50 m means a footway up to ~that much
+# farther can win over a road node, but a distant footway never beats a close one.
+SNAP_WALK_BIAS_M: float = 50.0
+_DEG_TO_M: float = math.pi / 180.0 * EARTH_RADIUS_M
+
 _COORD_CACHE_KEY = "_walk_coord_cache"
 _ROUTABLE_MASK_KEY = "_walk_routable_mask"
+_NODE_QUALITY_KEY = "_walk_node_quality"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +112,36 @@ def _routable_mask(G: nx.MultiDiGraph) -> np.ndarray:
     return mask
 
 
+def _node_walk_quality(G: nx.MultiDiGraph) -> np.ndarray:
+    """Per-node best road-type walkability (max ``highway_score`` over incident
+    edges), aligned to ``_node_coords`` order and memoised on ``G.graph``.
+
+    Used to bias snapping toward pedestrian-friendly nodes: a node touching a
+    footway scores ~0.9, one only on a primary ~0.08, so the snap prefers the
+    sidewalk over the arterial centreline. Uses ``highway_score`` (road type),
+    not the composite walk_score, so it keys purely on "is this a walking way or
+    a road" — independent of surface/environment.
+    """
+    cache = G.graph.get(_NODE_QUALITY_KEY)
+    key = (G.number_of_nodes(), G.number_of_edges())
+    if cache is not None and cache[0] == key:
+        return cache[1]
+
+    ids, _, _ = _node_coords(G)
+    index = {n: i for i, n in enumerate(ids)}
+    quality = np.zeros(len(ids), dtype=float)
+    for u, v, data in G.edges(data=True):
+        hs = _as_float(data.get("highway_score"))
+        if hs is None:
+            continue
+        for n in (u, v):
+            i = index[n]
+            if hs > quality[i]:
+                quality[i] = hs
+    G.graph[_NODE_QUALITY_KEY] = (key, quality)
+    return quality
+
+
 # ---------------------------------------------------------------------------
 # Distance helpers
 # ---------------------------------------------------------------------------
@@ -121,7 +160,8 @@ def haversine_m(lat1, lon1, lat2, lon2):
 # Node snapping (vectorised)
 # ---------------------------------------------------------------------------
 
-def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float, routable_only: bool = False):
+def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float,
+                 routable_only: bool = False, walk_bias: float = 0.0):
     """Return the id of the graph node nearest to (lat, lon).
 
     Vectorised equirectangular nearest-node search over the cached coordinate
@@ -132,6 +172,12 @@ def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float, routable_only: bool
     stubs) are excluded, so an address never snaps to a dead end that can't be
     routed from. Falls back to the unrestricted nearest node if, implausibly,
     no routable node exists.
+
+    With ``walk_bias > 0`` (metres), the choice minimises ``dist_m + (1 −
+    highway_score)·walk_bias`` instead of raw distance, so an address prefers a
+    nearby sidewalk/footway over an arterial centreline a few metres closer (which
+    would otherwise force the route to start ON the arterial). ``walk_bias = 0``
+    (the default) is the exact nearest node.
     """
     ids, lats, lons = _node_coords(G)
     if not ids:
@@ -140,11 +186,16 @@ def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float, routable_only: bool
     dy = lats - lat
     dx = (lons - lon) * cos_lat
     d2 = dy * dy + dx * dx
+    if walk_bias > 0.0:
+        # metres ≈ angular distance × earth radius (the lat/lon are in degrees)
+        cost = np.sqrt(d2) * _DEG_TO_M + (1.0 - _node_walk_quality(G)) * walk_bias
+    else:
+        cost = d2
     if routable_only:
         mask = _routable_mask(G)
         if mask.any():
-            d2 = np.where(mask, d2, np.inf)
-    return ids[int(np.argmin(d2))]
+            cost = np.where(mask, cost, np.inf)
+    return ids[int(np.argmin(cost))]
 
 
 # ---------------------------------------------------------------------------

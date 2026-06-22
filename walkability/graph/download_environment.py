@@ -30,9 +30,13 @@ from walkability.config import CACHE_DIR
 from walkability.graph.environment import (
     ARTERIALS_PATH,
     BUILDINGS_PATH,
+    OPENSPACE_PATH,
     POIS_PATH,
 )
 from walkability.scoring.weights import ARTERIAL_HIGHWAY_TAGS
+
+OPENSPACE_LEISURE = ["park", "garden", "nature_reserve", "recreation_ground",
+                     "common", "playground"]
 
 ox.settings.cache_folder = str(CACHE_DIR)
 ox.settings.use_cache = True
@@ -77,14 +81,38 @@ def download_pois(force: bool = False) -> None:
         return
     print("Fetching shop + amenity POIs ...")
     gdf = ox.features_from_place(PLACE, tags={"shop": True, "amenity": True})
-    # Points and polygon centroids both count as frontage; keep geometry only.
-    _save(gdf[["geometry"]], POIS_PATH)
+    # Keep the TYPE (amenity / shop) so the environment factor can weight
+    # high-foot-traffic POIs (restaurant, cafe, …) above street furniture
+    # (bench, waste_basket). Flatten any list-valued tags so GPKG can store them.
+    cols = ["geometry"] + [c for c in ("amenity", "shop") if c in gdf.columns]
+    gdf = gdf[cols].copy()
+    for c in ("amenity", "shop"):
+        if c in gdf.columns:
+            gdf[c] = gdf[c].map(
+                lambda v: v[0] if isinstance(v, list) and v
+                else (v if isinstance(v, str) else None)
+            )
+    _save(gdf, POIS_PATH)
+
+
+def download_openspace(force: bool = False) -> None:
+    if OPENSPACE_PATH.exists() and not force:
+        print(f"Open space already cached at {OPENSPACE_PATH.name} (use --force).")
+        return
+    print("Fetching open space (water + parks) ...")
+    gdf = ox.features_from_place(
+        PLACE, tags={"natural": "water", "leisure": OPENSPACE_LEISURE})
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+    gdf["kind"] = ["water" if str(n) == "water" else "park"
+                   for n in (gdf["natural"] if "natural" in gdf.columns else [None] * len(gdf))]
+    _save(gdf[["geometry", "kind"]], OPENSPACE_PATH)
 
 
 def main(force: bool = False) -> None:
     download_arterials(force)
     download_buildings(force)
     download_pois(force)
+    download_openspace(force)
     print("Done. Now rebuild with --force so the environment factor bakes in.")
 
 

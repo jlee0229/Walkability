@@ -372,13 +372,26 @@ def load_sidewalk_inventory(path: Path = INVENTORY_PATH) -> gpd.GeoDataFrame:
 # ---------------------------------------------------------------------------
 
 def _condition_to_score(raw_condition: Any) -> float | None:
-    """Convert a raw SCI value (0–100 numeric string) to a [0, 1] score."""
+    """Convert a raw SCI value (0–100 numeric string) to a [0, 1] score.
+
+    SCI is defined on 0–100. The Boston source field (stored as strings) is
+    partly corrupt: the literal ``"NaN"`` and negatives down to ~-68000 (an error
+    in the city's SCI calculation). These are NOT "destroyed sidewalk = 0" — they
+    are *no valid measurement*. Return None for anything outside [0, 100] (this
+    also catches the ``"NaN"`` string, since ``nan`` comparisons are False) so the
+    edge falls through to the OSM-tag surface tier rather than being mis-scored as
+    the worst possible surface. Without this, ~5,250 edges (4.3% of city-matched)
+    were wrongly assigned surface_score 0.0 from invalid SCI.
+    """
     if raw_condition is None or (isinstance(raw_condition, float) and pd.isna(raw_condition)):
         return None
     try:
-        return round(min(1.0, max(0.0, float(raw_condition) / 100.0)), 4)
+        sci = float(raw_condition)
     except (ValueError, TypeError):
         return None
+    if not (0.0 <= sci <= 100.0):
+        return None
+    return round(sci / 100.0, 4)
 
 
 def _width_to_score(width_ft: float | None) -> float | None:
@@ -633,9 +646,12 @@ def _build_canonical_schema(
         # Comfort: sidewalk room from city width data (None where unknown).
         "width_score":             _width_to_score(sidewalk_width_ft),
 
-        # Environment (arterial proximity × eyes-on-street; graph/environment.py).
-        # Absent when feature inputs weren't available — the factor then drops out.
+        # Environment = car_safety × eyes-on-street (graph/environment.py), where
+        # car_safety = min(on-path maxspeed, off-path arterial proximity). Absent
+        # when feature inputs weren't available — the factor then drops out.
         "environment_score":        (env or {}).get("environment_score"),
+        "car_safety_score":         (env or {}).get("car_safety_score"),
+        "maxspeed_safety_score":    (env or {}).get("maxspeed_safety_score"),
         "arterial_proximity_score": (env or {}).get("arterial_proximity_score"),
         "eyes_score":               (env or {}).get("eyes_score"),
         "environment_confidence":   (env or {}).get("environment_confidence"),

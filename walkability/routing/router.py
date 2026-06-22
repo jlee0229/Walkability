@@ -367,8 +367,8 @@ def find_routes(
     list[RouteResult] :
         Best route first. Empty if origin and destination are disconnected.
     """
-    o_node = clip.snap_to_node(G, *orig, routable_only=True)
-    d_node = clip.snap_to_node(G, *dest, routable_only=True)
+    o_node = clip.snap_to_node(G, *orig, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
+    d_node = clip.snap_to_node(G, *dest, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
     if o_node == d_node:
         return []
 
