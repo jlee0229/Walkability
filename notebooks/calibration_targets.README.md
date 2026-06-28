@@ -57,13 +57,16 @@ Reference (right side, pre-filled — do not edit by hand):
   diverges from your number.
 
 ## Model snapshot
-The `model_*` columns were generated **2026-06-26** against the model state:
-env-rework (A industrial down-weight + B graded car ceiling) + crossing-aware
-phase-3 guard, at `alpha=2.0`. The scale is currently compressed at the top —
-no route exceeds ~88 even when pedestrian-designed (e.g. `jamaica_pond_loop`,
-`road_separation` 0.65, scores 86 — same as an ordinary sidewalk). The re-anchor
-will use *your* `ideal_score`s to give the top band headroom (let separation lift
-the whole score) while pulling the car-shared cluster down.
+The `model_*` columns were regenerated **2026-06-28** against the model state:
+env-rework (A industrial down-weight + B graded car ceiling) + the re-anchor levers
+(graded `EYES_CEIL` by openness, `PED_PATH_COMFORT`, `CAR_SAFETY_CEIL` 0.82) + the
+tunnel-arterial fix (underground roads dropped from off-path) + **comfort
+top-compression** (`COMFORT_COMPRESS_KNEE`=0.80 / `_K`=0.50) + crossing-aware
+phase-3 guard, at `alpha=2.0`. Calibration vs the `ideal_score`s: MAE ≈ 2.35,
+bias ≈ +0.2 (down from +0.9 before comfort compression). The top band now has
+headroom (jamaica_pond 91, back_bay/comm_mall 89) and the car-shared cluster sits
+lower; the residual is a small upward bias plus the accepted Seaport openness
+undershoot (70 vs 80).
 
 ## Extending / re-running
 Append new routes by adding them to `SURVEY_ROUTES` (calibration_survey.py) and

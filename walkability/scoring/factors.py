@@ -47,6 +47,9 @@ from walkability.scoring.weights import (
     CATEGORY_FLOOR,
     CATEGORY_MAP,
     CATEGORY_WEIGHTS,
+    COMFORT_COMPRESS_CATEGORY,
+    COMFORT_COMPRESS_K,
+    COMFORT_COMPRESS_KNEE,
     FACTOR_WEIGHTS,
 )
 
@@ -206,15 +209,42 @@ def _category_values(
     return out
 
 
+def compress_comfort(category_values: dict[str, float]) -> dict[str, float]:
+    """Top-compress the comfort dimension above ``COMFORT_COMPRESS_KNEE``.
+
+    City SCI/material run optimistic, so comfort saturates near-ceiling on ordinary
+    streets and biases the score high; this trims that overshoot without touching
+    safety-gated routes. ``K``=1.0 (or value ≤ knee) is a no-op. See weights.py.
+
+    Applied to a finalized per-aggregate dimension dict — the edge ``category_values``
+    (``edge_walkability``) and the route ``dimension_scores``
+    (``router._aggregate_route_dimensions``) — *before* ``combine_categories``, so the
+    compressed value is the one both the score and the exposed ``dimension_scores``
+    bars use. NOT applied to per-edge ``edge_category_scores`` (raw), so the route's
+    per-dimension power mean is over raw comfort and the trim lands once on the
+    aggregate. Returns the input unchanged when comfort is absent / below the knee.
+    """
+    v = category_values.get(COMFORT_COMPRESS_CATEGORY)
+    if v is None or COMFORT_COMPRESS_K >= 1.0 or v <= COMFORT_COMPRESS_KNEE:
+        return category_values
+    out = dict(category_values)
+    out[COMFORT_COMPRESS_CATEGORY] = (
+        COMFORT_COMPRESS_KNEE + COMFORT_COMPRESS_K * (v - COMFORT_COMPRESS_KNEE)
+    )
+    return out
+
+
 def combine_categories(category_values: dict[str, float]) -> float:
     """Level-2 aggregate: importance-weighted GEOMETRIC mean across categories.
 
     The cross-category combine shared by the edge aggregate (``edge_walkability``)
     and the route aggregate (``routing/router.py::_build_route``), so the two can
     never drift. Each ``category_values`` entry is assumed already floored to
-    ``[CATEGORY_FLOOR, 1]``; absent categories simply don't contribute. Weights
-    come from ``CATEGORY_WEIGHTS`` (importance — Safety ≥ Path > Comfort). Non-
-    substitutable: one weak dimension dominates.
+    ``[CATEGORY_FLOOR, 1]`` **and comfort-compressed** (``compress_comfort``, applied
+    by the callers so the exposed dimension values match the score). Absent
+    categories simply don't contribute. Weights come from ``CATEGORY_WEIGHTS``
+    (importance — Safety ≥ Path > Comfort). Non-substitutable: one weak dimension
+    dominates.
     """
     cat_wsum = sum(CATEGORY_WEIGHTS.get(c, 1.0) for c in category_values)
     return math.exp(
@@ -294,8 +324,8 @@ def edge_walkability(
         return _EMPTY_WALK, _EMPTY_CONFIDENCE
 
     # Level 2: importance-WEIGHTED (CATEGORY_WEIGHTS) GEOMETRIC mean across the
-    # present categories. Absent categories simply don't contribute.
-    walk = combine_categories(category_values)
+    # present categories (comfort top-compressed first). Absent categories drop.
+    walk = combine_categories(compress_comfort(category_values))
 
     # Confidence stays a plain weight-weighted arithmetic mean (tiebreaker only).
     total_weight = sum(w for _, _, w, _ in contributions)

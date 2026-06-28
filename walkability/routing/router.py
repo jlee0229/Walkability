@@ -50,6 +50,7 @@ from walkability.scoring.factors import (
     _EMPTY_WALK,
     _as_str,
     combine_categories,
+    compress_comfort,
     edge_category_scores,
     edge_walkability,
 )
@@ -194,7 +195,10 @@ def _aggregate_route_dimensions(
             mean_pow = sum(v ** p for v, _ in items) / len(items)
         dim_values[dim] = min(1.0, max(CATEGORY_FLOOR, mean_pow ** (1.0 / p)))
 
-    return dim_values
+    # Comfort top-compression applied once to the route-level aggregate (the power
+    # mean is over raw per-edge comfort; the trim lands here), so the stored/exposed
+    # dimension_scores match what combine_categories scores. See factors.compress_comfort.
+    return compress_comfort(dim_values)
 
 
 def _build_route(

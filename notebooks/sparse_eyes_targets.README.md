@@ -15,9 +15,12 @@ The `model_*` columns were generated **2026-06-28** against the enriched graph
 rebuilt that day with the **tunnel-arterial fix** (underground roads dropped from
 off-path car-safety) **plus the re-anchor levers** (graded `EYES_CEIL` by openness,
 `PED_PATH_COMFORT`, `CAR_SAFETY_CEIL` 0.85→0.82, `CATEGORY_WEIGHTS` reweight,
-`eyes_uncapped`/`openness_score` fields) baked in, via
+`eyes_uncapped`/`openness_score` fields) **and comfort top-compression**
+(`COMFORT_COMPRESS_KNEE`=0.80 / `_K`=0.50) baked in, via
 `find_routes(..., alpha=2.0).walk_score` / `.dimension_scores` — the same call
 `calibration_survey._survey` uses. Re-snapshot this date if the model changes.
+(Comfort compression nudged this set down ~1 pt: Fort Point 75→74, Northern Ave
+71→70, Convention 71→69 — within noise; Fort Point still well above the old 62.)
 
 ## Survey verdict (2026-06-28, post-fix)
 The env-rework + tunnel fix bring the Seaport family close to ground truth (vs the

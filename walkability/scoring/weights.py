@@ -193,6 +193,23 @@ CATEGORY_WEIGHTS: dict[str, float] = {
 # pushed to 0.5) because surface/width is the hardest dimension to ground-truth from
 # Street View, so over-down-weighting it would be calibrating to the noisiest signal.
 
+# Comfort top-compression (2026-06-28). City SCI / material run optimistic — wear,
+# age, and narrowness aren't captured (the repeated field finding) — so the comfort
+# DIMENSION saturates near-ceiling (0.91–0.94) on ordinary "fine" streets, flooring
+# them ~4 pts above the surveyed ideal and giving the whole score a mild upward
+# bias. Compress comfort above a knee before the cross-category combine:
+#   comfort' = KNEE + K·(comfort − KNEE)   for comfort > KNEE   (identity below).
+# Applied at the single shared point factors.combine_categories, so the edge cost
+# and the reported route score stay consistent. Comfort-ONLY by design: it trims
+# the comfort-driven overshoot (survey bias +0.89→+0.23, MAE 2.75→2.38 over the 30
+# calibration routes) while leaving safety-gated routes (Seaport, gated by its low
+# safety in the geometric mean) essentially untouched — see memory
+# prefer-underscoring-to-overscoring. K=1.0 disables it. Shifts the baked default-
+# weight walk_score, so changing KNEE/K requires a --force rebuild + re-baseline.
+COMFORT_COMPRESS_CATEGORY: str = "comfort"
+COMFORT_COMPRESS_KNEE: float = 0.80
+COMFORT_COMPRESS_K:    float = 0.50
+
 # Sidewalk width → comfort score ramp (feet). Below MIN ≈ no buffer / forced
 # single-file; at/above GOOD ≈ comfortable two-abreast. Linear between. From the
 # city inventory (SWK_WIDTH) only — absent on most edges, so it drops out where
