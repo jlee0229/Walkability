@@ -13,7 +13,10 @@ python walkability/graph/download.py
 
 # Download the OSM feature inputs for the environment factor (run once):
 # arterials (incl. motorway/trunk, which the walk graph excludes), buildings,
-# shop/amenity POIs → data/osm/*.gpkg. Missing files just disable the factor.
+# shop/amenity POIs (with type), open space (parks/water), landuse=industrial
+# (truck-corridor down-weight), and all roads (road-separation for the graded
+# car-safety ceiling) → data/osm/*.gpkg. Missing core files disable the factor;
+# missing landuse/roads just disable their (optional) sub-signal.
 python walkability/graph/download_environment.py
 
 # Build the full enriched graph (skips rebuild if output already exists)
@@ -83,7 +86,7 @@ The core of the project is an enrichment pipeline in `walkability/graph/build.py
 
 For each edge the pipeline runs four tiers in order, stopping at the first hit:
 
-1. **City inventory match** (`data_source = "city_inventory"`) — spatial join within 10 m. Provides `surface_score` (SCI/100, structural condition) and `surface_material_score` (from MATERIAL code). ~81% of edges.
+1. **City inventory match** (`data_source = "city_inventory"`) — spatial join within 10 m. Provides `surface_score` (SCI/100, structural condition) and `surface_material_score` (from MATERIAL code). ~78% of edges. **Both sidewalks are aggregated, not coin-flipped** — see "Both-sides surface aggregation" below.
 2. **OSM tag** (`data_source = "highway=<type>"`) — resolved highway tag mapped through `HIGHWAY_SCORES`. ~18% of edges.
 3. **Context inference** (`data_source = "context:..."`) — bearing-weighted BFS over neighbouring tagged edges. <1% of edges.
 4. **Geometric fallback** (`data_source = "no_tag"`) — edge length heuristic. Rare.
@@ -106,7 +109,9 @@ Every tier produces a `FallbackResult` (defined in `walkability/osm/fallback.py`
 - `surface_score` — structural condition: SCI/100 from city data, or OSM surface tag score as fallback. Answers "how degraded is this surface?"
 - `surface_material_score` — intrinsic comfort: MATERIAL code → `SURFACE_SCORES` from city data (e.g. BR → paving_stones → 0.70), or the same OSM surface score when no city material is available, or `None` when the material code is unrecognised (OT/other). Answers "how comfortable is this surface type?" These are kept separate so `factors.py` can weight structural condition and material comfort independently at routing time. Never pre-combine them with `min()` or blend — that conflates two different dimensions.
 
-**`sidewalk_condition`** stores the raw SCI value (0–100) for auditing. The normalized [0, 1] score used in scoring is `surface_score`.
+**`sidewalk_condition`** stores the raw (now aggregated) SCI value (0–100) for auditing. The normalized [0, 1] score used in scoring is `surface_score`.
+
+**Both-sides surface aggregation** (`build.py::_aggregate_city_candidates`): a street's two sidewalks both fall within the 10 m match buffer of its single centerline edge. The join used to keep the single nearest-centroid polygon (an arbitrary "coin flip" that silently dropped the other side); now it takes an **area-weighted mean** over all valid candidates for `surface_score`/width and the **conservative (lowest-comfort) material**, and **flags divergence** — where the two sides genuinely disagree (one representative per inventory `SIDE`, largest-area; `|ΔSCI| > DIVERGENCE_THRESHOLD_SCI` or different material). Divergent edges have their `surface_confidence` multiplied by `DIVERGENCE_PENALTY` (0.85), since a single edge value is then less trustworthy. **Divergence is measured from per-`SIDE` representatives, not raw max−min over every matched polygon** — a tiny corner fragment of a perpendicular street is within the buffer too and would otherwise over-flag (~65% → ~26% divergent). Phantom polygons (`new_insp_d` pre-2000 **and** `inspected` null/NaN — never field-surveyed) are excluded from the aggregate; an edge whose candidates are all phantom/invalid falls through to the OSM tier. (This fixed a latent bug: the old per-row check `city_row.get("inspected") is None` never caught pandas `NaN`, so ~4.5k never-surveyed polygons were wrongly used as city data — hence the ~81%→~78% city-match shift.) Changing the aggregation or its constants requires a `--force` rebuild + re-baseline.
 
 **Baked `walk_score` / `walk_confidence` fast path**: `_build_canonical_schema` calls `scoring.factors.edge_walkability()` with the *default* `FACTOR_WEIGHTS` and writes the result onto each edge. `edge_walkability()` reads this baked value back **only when called with the literal `FACTOR_WEIGHTS` object** (identity check); any other weights dict (e.g. UI sliders) forces a full recompute. This keeps the "weights are tunable without a rebuild" guarantee while giving the common default-weight query path zero per-edge work. **A `--force` rebuild is required to (re)populate the baked field** after changing scoring logic or weights; graphs built before the bake simply recompute and still work.
 
@@ -114,23 +119,25 @@ Every tier produces a `FallbackResult` (defined in `walkability/osm/fallback.py`
 
 **Two-level (HDI-style) scoring** (`scoring/factors.py::edge_walkability`, structure in `scoring/weights.py`): `walk_score` is built in two levels so a failure in one *dimension* of walking can't be bought back by excellence in another (a pristine surface must not rescue a walk along a highway):
 1. **Within a category** — a weighted **arithmetic** mean of the present factors (factors there are *substitutable*; e.g. good condition offsets so-so material). `FACTOR_WEIGHTS` are these **within-category** relative weights, renormalised over whatever factors are present.
-2. **Across categories** — an importance-weighted (`CATEGORY_WEIGHTS`) **geometric** mean of the category values, each floored to `[CATEGORY_FLOOR, 1]` (default 0.15). Categories are *non-substitutable*; one weak category dominates, and Safety/Path outweigh Comfort (starting ratios 1.4 / 1.0 / 0.6). The floor stops a single zero category (motorway `road_type`, `foot=no`, on-arterial `environment`) from annihilating all discrimination — exactly as the Human Development Index bounds each dimension above zero. `CATEGORY_WEIGHTS` express *importance* (symmetric); `CATEGORY_FLOOR` is only the zero-collapse valve, **not** an importance dial (a high floor would clip and lose discrimination).
+2. **Across categories** — an importance-weighted (`CATEGORY_WEIGHTS`) **geometric** mean of the category values, each floored to `[CATEGORY_FLOOR, 1]` (default 0.15). Categories are *non-substitutable*; one weak category dominates, and Safety ≥ Path outweigh Comfort (ratios 1.15 / 1.0 / 0.7 — the 2026-06-24 survey nudged safety modestly above path so low-safety stretches are punished harder; the bump is kept small to avoid the classic prior-model failure of over-indexing safety, since safety/path already share a car-danger signal). The floor stops a single zero category (motorway `road_type`, `foot=no`, on-arterial `environment`) from annihilating all discrimination — exactly as the Human Development Index bounds each dimension above zero. `CATEGORY_WEIGHTS` express *importance* (symmetric); `CATEGORY_FLOOR` is only the zero-collapse valve, **not** an importance dial (a high floor would clip and lose discrimination).
 
 `CATEGORY_MAP` (`scoring/weights.py`) assigns each factor to one of three dimensions: **safety** (`environment`), **comfort** (`surface_quality`, `surface_material`, `surface_width`), **path** (`road_type`, `foot_access`). A new factor must be added to `CATEGORY_MAP` to count. A zero (UI-slider) weight drops the factor entirely; an all-empty category drops out of the geometric mean (never imputed). `confidence` stays a plain weight-weighted arithmetic mean (tiebreaker only — not geometric).
 
-This **supersedes** the earlier flat-mean tuning (where `road_type=4.5` sat just above the surface sum `4.0`): non-substitutability is now *structural*, so the cross-factor balance no longer lives in the weight numbers — they only set relative weight *within* a category. The two-level edge aggregate is a different axis from the route-level worst-segment power mean (`ROUTE_SCORE_EXPONENT`, across distance) — the two compose, don't duplicate. **Changing the structure or any weight requires a `--force` rebuild** to refresh the baked `walk_score` (the default-weight fast path), and re-baselining `notebooks/problem_routes_baseline.json`.
+**Comfort top-compression** (`scoring/factors.py::compress_comfort`, 2026-06-28): the **comfort** dimension value is compressed above a knee — `comfort' = COMFORT_COMPRESS_KNEE + COMFORT_COMPRESS_K·(comfort − KNEE)` (0.80 / 0.50) — before `combine_categories`. City SCI/material run optimistic (wear, age, narrowness uncaptured), so comfort saturates at 0.91–0.94 on ordinary "fine" streets and gives the whole score a mild upward bias (the survey ran +0.9 high; this brings it to +0.2, MAE 2.75→2.35). It is **comfort-only and Seaport-safe by construction**: safety-gated routes (Seaport, gated by low safety in the geometric mean) barely move, so it trims overshoot without deepening the accepted low-end undershoots (see `prefer-underscoring-to-overscoring`). Applied at the two dimension-finalization points — the edge `category_values` (`edge_walkability`) and the route `dimension_scores` (`router._aggregate_route_dimensions`) — **not** in `combine_categories` itself (kept pure) and **not** on per-edge `edge_category_scores` (so the route power-mean is over raw comfort and the trim lands once on the aggregate; the exposed `dimension_scores` bars stay matching the score). `K=1.0` disables it. Shifts the baked `walk_score` → needs a `--force` rebuild + re-baseline.
+
+This **supersedes** the earlier flat-mean tuning (where `road_type=4.5` sat just above the surface sum `4.0`): non-substitutability is now *structural*, so the cross-factor balance no longer lives in the weight numbers — they only set relative weight *within* a category. The two-level edge aggregate is a different axis from the route-level aggregate (the *same* two-level structure applied across distance — per-dimension power means `ROUTE_DIMENSION_EXPONENTS`, then the same geometric category combine; see routing step 7) — the two compose, don't duplicate. **Changing the structure or any weight requires a `--force` rebuild** to refresh the baked `walk_score` (the default-weight fast path), and re-baselining `notebooks/problem_routes_baseline.json`.
 
 ### Routing and scoring (query time)
 
 Composite scoring and routing live in `walkability/scoring/factors.py` and `walkability/routing/`. The flow for one query (`routing.router.find_routes(G, orig, dest, alpha=...)`):
 
 1. **Composite score** (`factors.edge_walkability`) — the two-level HDI-style aggregate (weighted-arithmetic within each `CATEGORY_MAP` category, floored, then equal-weight geometric mean across categories; see "Two-level scoring" above). Missing factors drop and weights renormalise so a missing score never penalises an edge. Returns `(walk_score, confidence)`, both [0,1]. This is also the boundary that **coerces GraphML strings** (`ox.load_graphml` returns custom fields as `"0.55"`, and `None` as a real `None`, an absent key, *or* the literal `"None"`) — use `_as_float`/`_as_str` rather than casting elsewhere.
-2. **Cost** (`routing/cost.py`) — `cost = length × (1 + α·(1 − walk_score))`. `α` is the single distance/walkability knob (0 = shortest path; higher = detour toward walkable edges). `foot=no` returns `None` (edge dropped); restricted access multiplies by `RESTRICTED_ACCESS_PENALTY` **except on terminal edges** — `edge_cost(is_terminal=True)` skips the penalty for an edge leaving the origin or entering the destination, since you'd legitimately use a customers-only path at your own endpoint (the "zoo entrance" case). `_routable_digraph` marks terminal edges via `u == o_node`/`v == d_node`. Both `edge_cost` and the projection take an optional `weights` dict (defaults to the `FACTOR_WEIGHTS` object for the baked fast path) that `find_routes` threads through from the UI sliders.
-3. **Spatial clip** (`routing/clip.py`) — clips the graph to an **ellipse with O and D as foci** before routing (`dist(O,n)+dist(n,D) ≤ budget`), so Yen's runs on a small local subgraph instead of all ~52k nodes. Node coords are cached on `G.graph`; snapping is a vectorised numpy `argmin`. **`find_routes` snaps with `snap_to_node(..., routable_only=True)`**: the geometrically nearest node to a real address is often a `foot=no` stub or a tiny disconnected footway fragment (e.g. an isolated pedestrian-bridge spur near the State House), which silently yields *zero routes*. `routable_only` restricts snapping to the **largest walkable connected component** (`clip._routable_mask`, built from non-`foot=no` edges and memoised on `G.graph`). The unrestricted default is unchanged so the `snap_to_node` invariant test still holds.
+2. **Cost** (`routing/cost.py`) — `cost = length × (1 + α·(1 − walk_score))`. `α` is the single distance/walkability knob (0 = shortest path; higher = detour toward walkable edges). (Crossings are not in the cost — they're handled by the phase-2 tube refinement; see "Two-phase side-aware routing" below.) `foot=no` returns `None` (edge dropped); restricted access multiplies by `RESTRICTED_ACCESS_PENALTY` **except on terminal edges** — `edge_cost(is_terminal=True)` skips the penalty for an edge leaving the origin or entering the destination, since you'd legitimately use a customers-only path at your own endpoint (the "zoo entrance" case). `_routable_digraph` marks terminal edges via `u == o_node`/`v == d_node`. Both `edge_cost` and the projection take an optional `weights` dict (defaults to the `FACTOR_WEIGHTS` object for the baked fast path) that `find_routes` threads through from the UI sliders.
+3. **Spatial clip** (`routing/clip.py`) — clips the graph to an **ellipse with O and D as foci** before routing (`dist(O,n)+dist(n,D) ≤ budget`), so Yen's runs on a small local subgraph instead of all ~52k nodes. Node coords are cached on `G.graph`; snapping is a vectorised numpy `argmin`. **`find_routes` snaps with `snap_to_node(..., routable_only=True)`**: the geometrically nearest node to a real address is often a `foot=no` stub or a tiny disconnected footway fragment (e.g. an isolated pedestrian-bridge spur near the State House), which silently yields *zero routes*. `routable_only` restricts snapping to the **largest walkable connected component** (`clip._routable_mask`, built from non-`foot=no` edges and memoised on `G.graph`). `find_routes` also passes **`walk_bias=SNAP_WALK_BIAS_M`**: the chosen node minimises `dist_m + (1 − highway_score)·bias`, so an address prefers a nearby sidewalk/footway over an *arterial centreline* a few metres closer (which would otherwise force the route to start ON the arterial and U-turn — the Newmarket case). `walk_bias=0` (the default) stays exact-nearest so the `snap_to_node` invariant test still holds.
 4. **A\* + penalty-method alternatives** (`_collect_candidates`) — the (clipped) `MultiDiGraph` is projected to a simple `DiGraph` (cheapest parallel edge per `(u,v)`, remembering its `key`; foot=no excluded). The best route is found with **A\*** (`nx.astar_path`) using a haversine straight-line heuristic — admissible/consistent because `cost ≥ length ≥ straight-line` for any alpha/weights, so it's exact under the UI sliders. Alternatives come from the **penalty method**: a per-edge multiplier (`ALT_PENALTY`, passed via A*'s `weight` callback — DG is never mutated) inflates a found route's edges so the next A* run diverges; an alternative is kept only if its true cost is within `ALT_MAX_STRETCH` of the optimum. This replaced Yen's `nx.shortest_simple_paths`, which dominated long-route latency (≈2.4 s → ≈0.5 s at 5 km).
 5. **Confidence is a tiebreaker, not a cost term** — kept entirely out of the edge cost. After A* yields candidates, a re-rank adds a confidence bonus that decays to zero outside a small `walk_score` window (`tie_epsilon`), so it only reorders near-equal routes. If every candidate is below a confidence floor, more A* runs are pulled (expansion). **At `alpha=0` the walk re-rank is skipped** — pure-shortest-path mode keeps cost (length) order so it's a true length floor.
 6. **Clip auto-widens** — if the best route hugs the ellipse boundary the clip widens (`WIDEN_FACTOR`, up to `MAX_WIDENS`) and finally falls back to the full graph, so clipping can never silently drop the true optimum.
-7. **Route-level walk_score is a worst-segment-aware power mean** (`_build_route`) — the route's reported `walk_score` is a length-weighted *power mean* of its edge scores with exponent `ROUTE_SCORE_EXPONENT` (`scoring/weights.py`, default 0.5 < 1), so one bad block drags the whole route down instead of being averaged away. `confidence` stays a plain length-weighted mean (tiebreaker only). Terminal edges that are restricted-access have their `foot_access` factor dropped before aggregation (recomputed by removing the `foot_access`/baked keys), matching the cost exemption so a forced endpoint neither distorts route choice nor tanks the reported score. This aggregation is query-time only — **no `--force` rebuild needed** to change `ROUTE_SCORE_EXPONENT`, but re-baseline `notebooks/problem_routes_baseline.json` since routing paths can shift.
+7. **Route-level walk_score is a two-level HDI aggregate, one level up** (`_build_route` → `_aggregate_route_dimensions` + `factors.combine_categories`) — the route's reported `walk_score` mirrors the *edge* two-level structure across distance. **Per dimension** (safety/comfort/path from `edge_category_scores`), the route is a length-weighted **power mean** of that dimension's edge values over the edges where it's present, exponent from `ROUTE_DIMENSION_EXPONENTS` (`scoring/weights.py`; lower → more worst-segment-sensitive), floored to `[CATEGORY_FLOOR, 1]`. **Across dimensions**, those route-level values are combined with the **same** `CATEGORY_WEIGHTS` geometric mean as a single edge (the shared `combine_categories`). Aggregating *per dimension before* the cross-category combine is the point: a bad safety (or path) block can't be bought back by good comfort on the *same edge* — under the old single combined power mean the bad dimension was diluted within the edge (geometric-combined with the edge's good dimensions) *before* the route ever saw it. The floored per-dimension values are exposed on `RouteResult.dimension_scores` so the survey/diagnostics bars match the score exactly. `confidence` stays a plain length-weighted mean (tiebreaker only). Terminal restricted-access edges have their `foot_access` dropped before aggregation (matching the cost exemption). Query-time only — **no `--force` rebuild needed** to change `ROUTE_DIMENSION_EXPONENTS`, but re-baseline `notebooks/problem_routes_baseline.json` since both the scores and (via `_rank_score`/the phase-3 guard) the chosen routes can shift. **This is re-ranking/reporting, not re-search**: worst-segment is a whole-route quantity, so it can't enter the per-edge A\* cost without breaking admissibility — it changes which *already-found* candidate ranks #1 and whether a refined route is kept, never which corridors A\* explores. **Currently at neutral exponents (all = `ROUTE_SCORE_EXPONENT` = 0.5).** Step A isolated the dimension-wise *restructure* at neutral exponents (removing the old per-edge×route double worst-segment penalty — a small upward shift). **Step B (safety → 0.3) was trialled and reverted**: on the flagged-HIGH routes (Newmarket etc.) it was a near-no-op (≤0.5 walk pts), because those score high from *long* stretches of *moderate* (0.6–0.7) safety, not a short diluted bad block — the length-weighted power mean barely moves, and lowering the exponent further would let a single short floored edge collapse every route. The real lever for those routes is the safety **values** on industrial arterials (the provisional `perceived_safety`-runs-high issue), not the route-level exponent.
 
 Performance: clipping makes local trips fast (≈0.1s at 700 m on the full graph) but barely helps long cross-city trips (large ellipse). Load the graph **once** (e.g. Streamlit `@st.cache_resource`) — the GraphML load alone is ~10 s.
 
@@ -155,7 +162,14 @@ These are dev/QA scripts, not part of the package. They import each other as sib
 - `calibration_survey.py` — generates `calibration_survey.html`: a hand-picked set of routes across Boston's walkability spectrum, each as a zoomed map with numbered per-segment colouring, the per-DIMENSION breakdown (safety/comfort/path via `edge_category_scores`), Street View links, and the calibration questions. The tool for collecting `subj_walkability` ground truth to tune `CATEGORY_WEIGHTS` / `CATEGORY_FLOOR` / the `environment` constants.
 - `ground_truth.csv` (+ `.README.md`) — region-tagged manual observation log; the human-judgment side of verification (subjective walkability, real surface/condition, route quality). `Research/work_and_verification_outline.md` explains the invariants-vs-validity boundary (what can/can't be automated).
 
-**Crossings are unscored.** They exist only as `highway=crossing` nodes; the edge-cost router ignores node attributes, and there is no crossing factor in `FACTOR_WEIGHTS`. `audit_route`'s crossing count is informational, not a score input.
+**Crossings are not modeled directly.** They exist only as `highway=crossing` nodes and there is no crossing factor in `FACTOR_WEIGHTS` (reported `walk_score` is unaffected by them). `audit_route`'s crossing count and `RouteResult.crossing_count` are informational. Crossing-minimisation is structural — see "Two-phase side-aware routing" below.
+
+**Two-phase side-aware routing (`router.find_routes`).** Where a street's two sides are distinct footways (most of footway-dense Boston), *crossing between them is free* in the cost, so a single-pass optimiser zigzags across streets and picks the "wrong side" — a side-switch costs nothing but *buys* `walk_score`, so a soft crossing penalty competes with walkability and is unreliable. The fix decomposes the problem (the graph has no side labels or street association — West Cedar St isn't even in it — so sides can't be chosen explicitly):
+- **Phase 1 — corridor:** the existing walkability-aware A* + alternatives picks *which streets* (each candidate `R1`). Ranked by `_rank_score` first, so the corridor choice is made on the full walkable route.
+- **Phase 2 — sides/crossings:** for each `R1` (in rank order), re-minimise **length** inside a narrow **tube** around it (`clip.clip_to_route`, half-width `TUBE_WIDTH_M`=35 m; `_collect_candidates` at `REFINE_ALPHA`=0). *Once the corridor is fixed, minimising length minimises gratuitous crossings* — a zigzag is strictly longer. The tube is wide enough for both sidewalks but narrower than a block, so phase 2 can switch sides but can't wander to a parallel street. No side labels, no crossing detection. Phase 2 **excludes `service` edges** not already on `R1` — pure length-min would otherwise take a parking-lot / back-alley shortcut (the South End "Boriken St" case), and the whole-route guard misses one diluted bad block.
+- **Phase 3 — crossing-aware guard:** keep the shortened `R2` only if `R2.walk_score ≥ R1.walk_score − (REFINE_SCORE_TOL + REFINE_CROSSING_CREDIT·crossings_saved)` (0.04 + 0.05·ΔX); else revert to `R1` (the zigzag was avoiding a genuinely bad block). The **crossing credit** exists because crossings are free in the cost, so `R1`'s walk_score is partly inflated by weaving between parallel paths to harvest the best-scoring segment at each step — a fewer-crossing `R2` that scores a little lower is often the genuinely better route (the **Seaport** case: phase-1 wove 3 crossings for +8 walk pts; phase-2's length-min found the direct 1-crossing route at walk 70, which the flat-0.04 guard rejected and the crossing-aware guard accepts). The credit **only widens** the allowance when `R2` removes crossings, so it can never admit a route that doesn't cut crossings — confirmed across the survey: only Seaport flips (3→1), all 19 others unchanged. (Seaport's reported walk then drops 78→70, its *honest* value once the free-crossing harvest is removed; the residual "Seaport reads LOW" is the sparse-eyes issue, separate from routing.) `R2` is length-≤ `R1` by construction, so refinement never lengthens a route.
+
+All **query-time, no rebuild** (no new edge fields). `find_routes(..., refine_sides=False)` disables phase 2 to reproduce the phase-1-only "previous" model for A/B. Skipped at `alpha=0` (the corridor is already the shortest path, preserving the length floor). Empirically: −4.2% total length across the survey routes, 0 routes lengthened, 0 walk-score drops beyond tol; Beacon Hill route #1 went 6→4 hops with the West Cedar zigzag removed. **The single knob is `TUBE_WIDTH_M`** (too narrow → can't reach the needed side on a wide street; too wide → phase 2 can jump to a shorter parallel street). Tuning it or `REFINE_*` is query-time but **re-baseline `notebooks/problem_routes_baseline.json`**.
 
 ### Boston sidewalk inventory field mapping
 
@@ -163,14 +177,14 @@ The shapefile columns do not match generic names — use these constants in `bui
 
 | Constant | Column | Notes |
 |---|---|---|
-| `SWK_CONDITION_FIELD` | `SCI` | Sidewalk Condition Index, numeric string 0–100 |
+| `SWK_CONDITION_FIELD` | `SCI` | Sidewalk Condition Index, numeric string 0–100. **Partly corrupt**: ~430 negatives (down to ~−68000, a city calc error) + the string `"NaN"`. `_condition_to_score` returns `None` for anything outside 0–100, so those ~5,250 edges fall through to the OSM tier instead of mis-scoring `surface_score=0.0`. |
 | `SWK_WIDTH_FIELD` | `SWK_WIDTH` | Width in feet |
 | `SWK_SURFACE_FIELD` | `MATERIAL` | Codes: `CC`=concrete, `BR`=brick, `BIT`/`AC`=asphalt, `GR`=granite, `OT`=other (scores as None) |
 | `SWK_DATE_FIELD` | `new_insp_d` | Most recent re-inspection date; 1970-01-01 is a Unix-epoch placeholder (17% of rows, concentrated in West Roxbury and Downtown — a data-entry batch issue, not a spatial quality signal) |
 
 **1970-date two-level treatment** (in `_build_canonical_schema`): rows with a pre-2000 date are split by the `inspected` column before confidence is assigned:
 - `inspected = "yes"` → survey happened, date was mis-logged. Use SCI/MATERIAL; apply `CONF_CITY_DATE_MISSING = CONF_CITY_OLDER × 0.85` (≈ 0.72). Do **not** treat these as lower-quality edges — the West Roxbury concentration would introduce a spurious spatial confidence gradient.
-- `inspected = null` → sidewalk polygon exists but was never field-surveyed. `city_row` is set to `None` in `_build_canonical_schema` before any city fields are read, so these fall through to the OSM-tag tier.
+- `inspected = null`/NaN → sidewalk polygon exists but was never field-surveyed. Such **phantom candidates are excluded inside `_aggregate_city_candidates`** before the both-sides mean is taken; an edge whose candidates are *all* phantom yields no aggregate and falls through to the OSM-tag tier. (The legacy single-row check `city_row.get("inspected") is None` in `_build_canonical_schema` only caught a literal missing key, never pandas `NaN` — the aggregator now handles both, which dropped ~4.5k wrongly-used phantom polygons.)
 
 ### Implemented UI — "Humanpath" Streamlit app
 
@@ -275,33 +289,104 @@ behaviours, several of them hard-won — **don't regress**:
 - Candidate changes from the 10-route ground-truth survey (logged in
   `notebooks/ground_truth.csv`), in rough priority. **Done:** the route-terminal
   restricted-access exemption (the "customer at your own destination" case — now in
-  `edge_cost(is_terminal=...)` and `_build_route`). **Still open:** (2) a
-  crossing/turn-minimisation objective; (3) an accessibility (step-free) toggle;
-  (4) amenity/greenery and safety dimensions.
-- **Environment overrating (being addressed by the `environment` factor).** The
-  `road_type` weight was raised to 4.5 (slightly above the combined surface weight
-  of 4.0), which improved arterial avoidance but did **not** fix the
-  newmarket-style overrating: industrial streets tagged `highway=residential`
-  get `highway_score=0.55` (not low enough) and pristine surfaces still pull the
-  composite up. As concluded, a weight tweak alone cannot fix a `highway_score`
-  *value* too high for the actual environment — the fix is a **new edge feature**.
-  That feature is the `environment` factor (`graph/environment.py`):
-  `environment_score = sqrt(arterial_proximity × eyes)` — car-hostility combined
-  geometric-mean with "eyes on the street". It lives in the **safety** category of
-  the two-level score (see "Two-level scoring"), not a flat weight.
-  **Calibrated (Boston 10-route survey, `notebooks/calibration_survey.py` →
-  `ground_truth.csv`):** arterial proximity uses per-class **floors**
-  (`ARTERIAL_CLASSES`: motorway 0.0 … secondary 0.45) so a calm urban street isn't
-  scored like an expressway; a **pedestrian-dedicated exemption**
-  (`PED_ARTERIAL_FLOOR`, gated to footways beside calm roads) protects separated
-  paths; `eyes` is **building-presence-led** so residential reads as watched
-  without shops; `CATEGORY_WEIGHTS` set safety = path > comfort. This moved the
-  survey routes onto their human targets (Back Bay 54→85, South End 58→79,
-  Newmarket held low at 49). **Known residuals (NOT weight bugs):** Seaport
-  under-scores (open waterfront safe via pedestrian volume / openness — a missing
-  signal the building/POI eyes-proxy can't see); Newmarket's remaining gap is its
-  origin-snapping onto the primary + a `surf=0.00` data anomaly. To re-tune:
-  regenerate the survey, compare to `ground_truth.csv`, `--force` rebuild + re-baseline.
+  `edge_cost(is_terminal=...)` and `_build_route`); and the **crossing-minimisation /
+  side-awareness** half of (2) via the **two-phase tube routing** (phase-1 corridor →
+  phase-2 length-min in a tube; see "Two-phase side-aware routing"), which fixes the
+  "wrong side" zigzag in footway-dense areas without modeling sides. (An earlier soft
+  crossing penalty + geometric `crossing_road_class` detection was tried and **removed**
+  — a soft penalty competes with walkability and was unreliable.) **Still open:** (2b)
+  turn-count/simplicity minimisation; (3) accessibility (step-free) toggle; (4)
+  amenity/greenery factor.
+- **`environment` factor (the SAFETY dimension; `graph/environment.py`).**
+  `environment_score = sqrt(car_safety × perceived_safety)` — both must be high
+  (geometric mean). It lives in the **safety** category of the two-level score, not
+  a flat weight. It exists because a weight tweak alone can't fix a `highway_score`
+  *value* too high for the actual environment — it needed a new edge feature.
+  - **`car_safety = min(graded_ceiling, on_path, off_path) × industrial_penalty`**
+    (weakest link → no double-count):
+    *on_path* = the road you walk **along**, scored from its `maxspeed` via a
+    crash-risk curve (`MAXSPEED_SAFETY_ANCHORS`; footway → 1.0, 25 mph → 0.90,
+    35 → 0.45, missing → class default `DEFAULT_MAXSPEED_MPH`); *off_path* =
+    proximity to a nearby fast road you're **not** on (for footways / quiet streets
+    beside an arterial), computed **only for non-arterial edges** (an arterial's own
+    danger is already on-path). **Off-path hostility uses the arterial's ACTUAL
+    `maxspeed`** (resolved in `_arterial_scores`, falling back to the class default
+    when untagged), mirroring on-path — so a calm 25 mph arterial barely penalises
+    a nearby footway while a 40 mph parkway still does. Reach (penalty *distance*)
+    stays class-based (`ARTERIAL_REACH_M`); only depth follows speed. This fixed
+    the Back Bay/Seaport/Longwood "safety too low" cases (most Boston arterials are
+    posted 25 mph, not the 30–35 class default). It **retired** the earlier arterial
+    class-floor + pedestrian-exemption hack.
+    - **Underground roads excluded (2026-06-28).** Off-path proximity is purely 2D
+      distance-to-line, so a **tunneled** road would crater a fine surface footway
+      directly above it — Boston's Big Dig buries I-90/I-93 under Fort Point /
+      downtown / Seaport (the grounded case: Fort Point seg #2's nearest "arterial"
+      was the tunneled Mass Pike, `car_safety` ~0.05 on a pleasant block, route 62
+      vs ideal 70). `download_environment.py` now keeps the `tunnel`/`layer` tags on
+      both the arterials and roads gpkgs, and `environment.py::_drop_underground`
+      removes `tunnel=yes`/`layer<0` segments from `load_arterials()` (off-path) and
+      `load_roads()` (separation — a path *above* a buried road is genuinely
+      road-separated). Scoped to **underground only**; elevated/bridge roads stay (a
+      pedestrian under a viaduct does feel it). 127 underground arterials dropped
+      citywide; Fort Point 62→75. The residual Fort Point gap is the sparse-eyes
+      (low `eyes_score`) issue, not the tunnel. Requires re-download + `--force`
+      rebuild + re-baseline (done 2026-06-28).
+    - **Graded car-safety ceiling (B; 2026-06-26 env-rework).** The ceiling is
+      `CAR_SAFETY_CEIL + (1 − CAR_SAFETY_CEIL)·road_separation` rather than a flat
+      `min(0.85,…)` clip. `road_separation` = `min(1, dist_to_nearest_road /
+      SEPARATION_REACH_M)` from the new all-roads layer (`boston_roads.gpkg`): a
+      road-adjacent path (separation 0) still tops at 0.85, but a genuinely road-
+      SEPARATED path (greenway / HarborWalk / pedestrian bridge, separation→1)
+      climbs toward 1.0. The old hard clip flattened a park path and a sidewalk-
+      beside-a-calm-road to the *same* 0.85, erasing that distinction. `min()` still
+      lets a real on/near road dominate, so low values are untouched. (The arterial
+      layer alone can't do this — "no arterial near" ≠ "no road near".)
+    - **Industrial truck penalty (A; same rework).** `industrial_exposure` =
+      proximity to a `landuse=industrial` polygon (new `boston_landuse.gpkg`,
+      `INDUSTRIAL_REACH_M`) multiplies `car_safety` down by
+      `(1 − INDUSTRIAL_CAR_PENALTY·exposure)`. `maxspeed` misses truck/industrial
+      danger, and off-path can't discriminate (industrial Mass Ave is posted 25 mph
+      like a genteel street — the grounded Newmarket finding). A and B are
+      orthogonal: A lowers road-adjacent industrial corridors, B raises separated
+      greenways. Both layers are **optional** — absent ⇒ exposure/separation 0 ⇒
+      the pre-rework model.
+  - **`perceived_safety`** (stored as the `eyes_score` field) = a probabilistic
+    **noisy-OR** (`1 − ∏(1−s)`) of three SUBSTITUTABLE signals — safe if ANY is
+    strong, unsafe only when you lack ALL: *activity* (foot-traffic POIs,
+    type-weighted so benches/parking — 57% of raw POIs — count 0 via
+    `POI_NOISE_AMENITIES`), *enclosure* (buildings facing the street; dropped for
+    alley/service edges, **and discounted by `industrial_exposure`** —
+    `enclosure ×= (1 − INDUSTRIAL_ENCLOSURE_DISCOUNT·exposure)` — since a warehouse
+    footprint provides no residential "eyes"; A's secondary half), *openness*
+    (adjacency to large park/water, `OPENSPACE_MIN_AREA_M2`/`OPENNESS_REACH_M` — the
+    Seaport HarborWalk fix, and *discriminating* unlike footway density, which is
+    ~universal in a city).
+  - **Calibrated** against the Boston survey (`calibration_survey.py` →
+    `ground_truth.csv`): Back Bay 54→89, South End →85, Seaport 40→78 (openness),
+    plus the Newmarket origin-snap fix (`SNAP_WALK_BIAS_M`, routing/clip.py) and the
+    `surf=0.00` data-bug fix (`_condition_to_score` rejects out-of-range SCI;
+    residential bumped 0.55→0.65). `CATEGORY_WEIGHTS` = safety ≥ path > comfort
+    (1.15 / 1.0 / 0.7 after the 2026-06-24 survey).
+  - **Env-rework (2026-06-26), grounded on Newmarket — code landed, awaiting a
+    `--force` rebuild + re-survey** (see `Research/env_rework_spec.md` and memory
+    `newmarket-safety-high-needs-landuse`). The earlier "perceived_safety runs HIGH"
+    hypothesis was **partly refuted**: on industrial Newmarket `eyes` was already
+    ~0.53 (fine); the real inflation was **`car_safety` pinned at the 0.85 ceiling**
+    beside the industrial arterial (footway `on_path`=1.0 + weak off-path), with
+    warehouse `enclosure` a secondary lift. Ruled out by grounding: the route-level
+    worst-segment exponent (no-op — bad blocks are short, length-weighting protects
+    them; reverted) and a speed-based off-path penalty (can't discriminate —
+    industrial Mass Ave 0.87 vs charming Beacon Hill 0.91, both posted 25 mph). The
+    landed fix is **A (industrial down-weight) + B (graded car ceiling)** above.
+    **To activate:** `python walkability/graph/download_environment.py --force`
+    (fetches `boston_landuse.gpkg` + `boston_roads.gpkg`) → check `landuse=industrial`
+    coverage on Newmarket (the viability gate) → `python -m walkability.graph.build
+    --force` → re-baseline → re-survey (Newmarket/Allston should drop; greenways /
+    HarborWalk should rise; Beacon Hill/Back Bay must NOT spuriously rise). The
+    per-edge `industrial_exposure`/`road_separation` fields let A and B be measured
+    independently offline from the single rebuild (`INDUSTRIAL_CAR_PENALTY` /
+    `SEPARATION_REACH_M` are the tuning knobs). `EYES_CEIL`'s own flattening is a
+    deferred later pass.
 
 ### Dev workflow note
 

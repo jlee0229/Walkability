@@ -35,6 +35,7 @@ Spatial work uses geopandas ``sjoin`` / ``sjoin_nearest`` (shapely 2.x STRtree)
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from pathlib import Path
 
@@ -45,17 +46,23 @@ import pandas as pd
 
 from walkability.config import OSM_DIR
 from walkability.scoring.weights import (
-    ARTERIAL_CLASSES,
+    ARTERIAL_REACH_M,
+    CAR_SAFETY_CEIL,
+    DEFAULT_MAXSPEED_MPH,
+    EYES_CEIL,
     ENV_CONFIDENCE,
-    EYES_ALLEY_FACTOR,
     EYES_BLDG_SAT,
     EYES_BUFFER_M,
     EYES_POI_SAT,
-    EYES_W_BLDG,
-    EYES_W_POI,
-    PED_ARTERIAL_FLOOR,
-    PED_EXEMPT_MIN_FLOOR,
+    INDUSTRIAL_CAR_PENALTY,
+    INDUSTRIAL_ENCLOSURE_DISCOUNT,
+    INDUSTRIAL_REACH_M,
+    MAXSPEED_SAFETY_ANCHORS,
+    OPENNESS_REACH_M,
+    OPENSPACE_MIN_AREA_M2,
     PEDESTRIAN_HIGHWAYS,
+    POI_NOISE_AMENITIES,
+    SEPARATION_REACH_M,
 )
 
 # ---------------------------------------------------------------------------
@@ -65,6 +72,9 @@ from walkability.scoring.weights import (
 ARTERIALS_PATH = OSM_DIR / "boston_arterials.gpkg"
 BUILDINGS_PATH = OSM_DIR / "boston_buildings.gpkg"
 POIS_PATH      = OSM_DIR / "boston_pois.gpkg"
+OPENSPACE_PATH = OSM_DIR / "boston_openspace.gpkg"
+LANDUSE_PATH   = OSM_DIR / "boston_landuse.gpkg"   # industrial polygons (A); optional
+ROADS_PATH     = OSM_DIR / "boston_roads.gpkg"     # all roads, for separation (B); optional
 
 # Metric CRS for distance/buffer maths — UTM Zone 19N covers Boston. Matches
 # graph/build.py::METRIC_CRS (duplicated here to avoid a circular import; build
@@ -77,11 +87,9 @@ METRIC_CRS = "EPSG:32619"
 # not underestimated at the subset boundary.
 AREA_MARGIN_M: float = 250.0
 
-# Fallback (reach, floor) for an arterial whose class we can't resolve (shouldn't
-# happen — we only pull ARTERIAL_HIGHWAY_TAGS). Use the most lenient class.
-_DEFAULT_CLASS: tuple[float, float] = min(
-    ARTERIAL_CLASSES.values(), key=lambda rf: rf[0]
-)
+# Fallback reach for an arterial whose class we can't resolve (shouldn't happen —
+# we only pull ARTERIAL_HIGHWAY_TAGS). Use the shortest reach.
+_DEFAULT_REACH_M: float = min(ARTERIAL_REACH_M.values())
 
 
 # ---------------------------------------------------------------------------
@@ -90,15 +98,37 @@ _DEFAULT_CLASS: tuple[float, float] = min(
 
 def _missing_inputs() -> list[Path]:
     """Return the cached feature files that don't yet exist."""
-    return [p for p in (ARTERIALS_PATH, BUILDINGS_PATH, POIS_PATH) if not p.exists()]
+    return [p for p in (ARTERIALS_PATH, BUILDINGS_PATH, POIS_PATH, OPENSPACE_PATH)
+            if not p.exists()]
+
+
+def _drop_underground(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Remove tunnel / below-grade road segments from a road layer.
+
+    A buried road (``tunnel=yes`` or ``layer < 0``) imposes no street-level
+    pedestrian hostility, but off-path proximity is purely 2D distance-to-line, so
+    it would crater the car-safety of a fine surface footway directly above it.
+    Boston's Big Dig buries I-90/I-93 under Fort Point / downtown / Seaport — the
+    grounded case (Fort Point seg #2: nearest 'arterial' was the tunneled Mass
+    Pike, car_safety ~0.05 on a pleasant block). Scoped to UNDERGROUND only;
+    elevated/bridge roads are left in (a pedestrian under a viaduct does feel it).
+    Missing tunnel/layer columns (older cache) → no-op (returns gdf unchanged)."""
+    keep = pd.Series(True, index=gdf.index)
+    if "tunnel" in gdf.columns:
+        t = gdf["tunnel"].astype("string").str.lower()
+        keep &= ~t.isin(["yes", "building_passage", "culvert"])
+    if "layer" in gdf.columns:
+        keep &= ~(pd.to_numeric(gdf["layer"], errors="coerce") < 0)
+    return gdf[keep].copy()
 
 
 def load_arterials() -> gpd.GeoDataFrame:
-    """Cached arterial road geometry (incl. motorway/trunk), in METRIC_CRS."""
+    """Cached arterial road geometry (incl. motorway/trunk), in METRIC_CRS,
+    with underground (tunnel / layer<0) segments dropped."""
     gdf = gpd.read_file(ARTERIALS_PATH).to_crs(METRIC_CRS)
     # Keep only line geometry — distance-to-road is meaningless for stray points.
     gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
-    return gdf
+    return _drop_underground(gdf)
 
 
 def load_buildings() -> gpd.GeoDataFrame:
@@ -107,66 +137,188 @@ def load_buildings() -> gpd.GeoDataFrame:
 
 
 def load_pois() -> gpd.GeoDataFrame:
-    """Cached shop/amenity POIs (active frontage), in METRIC_CRS."""
-    return gpd.read_file(POIS_PATH).to_crs(METRIC_CRS)
+    """Cached shop/amenity POIs in METRIC_CRS, with a foot-traffic ``weight`` column.
+
+    Street furniture / parking (POI_NOISE_AMENITIES) weigh 0; every shop and any
+    other amenity weighs 1 (active frontage). Older caches without the type
+    columns fall back to weight 1 for all.
+    """
+    gdf = gpd.read_file(POIS_PATH).to_crs(METRIC_CRS)
+    amenity = gdf["amenity"] if "amenity" in gdf.columns else None
+    shop    = gdf["shop"]    if "shop"    in gdf.columns else None
+
+    def _w(i) -> float:
+        if shop is not None and isinstance(shop.iloc[i], str):
+            return 1.0
+        if amenity is not None:
+            a = amenity.iloc[i]
+            if isinstance(a, str):
+                return 0.0 if a in POI_NOISE_AMENITIES else 1.0
+        return 1.0
+
+    gdf["weight"] = [_w(i) for i in range(len(gdf))]
+    return gdf
+
+
+def load_openspace() -> gpd.GeoDataFrame:
+    """Cached large open-space polygons (parks + water ≥ OPENSPACE_MIN_AREA_M2),
+    in METRIC_CRS. Small pocket parks/playgrounds are dropped — only meaningful
+    open space gives the openness/sightlines that read as safe."""
+    gdf = gpd.read_file(OPENSPACE_PATH).to_crs(METRIC_CRS)
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+    gdf = gdf[gdf.geometry.area >= OPENSPACE_MIN_AREA_M2]
+    return gdf
+
+
+def load_landuse() -> gpd.GeoDataFrame:
+    """Cached industrial landuse polygons (A), in METRIC_CRS. Optional input —
+    callers must handle its absence (industrial_exposure then defaults to 0)."""
+    gdf = gpd.read_file(LANDUSE_PATH).to_crs(METRIC_CRS)
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+    return gdf
+
+
+def load_roads() -> gpd.GeoDataFrame:
+    """Cached all-roads geometry (B), in METRIC_CRS. Optional input — callers must
+    handle its absence (road_separation then defaults to 0, today's flat ceiling)."""
+    gdf = gpd.read_file(ROADS_PATH).to_crs(METRIC_CRS)
+    gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
+    return _drop_underground(gdf)
+
+
+def _empty_gdf() -> gpd.GeoDataFrame:
+    """An empty GeoDataFrame in METRIC_CRS — the no-op stand-in for an optional
+    (landuse / roads) layer that hasn't been downloaded yet."""
+    return gpd.GeoDataFrame(geometry=[], crs=METRIC_CRS)
 
 
 # ---------------------------------------------------------------------------
 # Scalar score helpers (parameters from scoring/weights.py)
 # ---------------------------------------------------------------------------
 
-def _arterial_class(highway) -> tuple[float, float] | None:
-    """``(reach_m, floor)`` for an arterial's ``highway`` tag, or None.
+def maxspeed_safety(mph: float) -> float:
+    """Map a road speed (mph) to on-path car-safety [0,1] via MAXSPEED_SAFETY_ANCHORS."""
+    a = MAXSPEED_SAFETY_ANCHORS
+    if mph <= a[0][0]:
+        return a[0][1]
+    if mph >= a[-1][0]:
+        return a[-1][1]
+    for (x0, y0), (x1, y1) in zip(a, a[1:]):
+        if x0 <= mph <= x1:
+            return y0 + (y1 - y0) * (mph - x0) / (x1 - x0)
+    return a[-1][1]
 
-    ``_link`` ramps inherit their base class. Multi-valued tags take the most
-    hostile class present (the lowest floor).
-    """
-    if isinstance(highway, (list, tuple)):
-        cands = [rf for rf in (_arterial_class(h) for h in highway) if rf is not None]
-        return min(cands, key=lambda rf: rf[1]) if cands else None
-    if not isinstance(highway, str):
+
+def _parse_speed(maxspeed) -> float | None:
+    """Parse an OSM maxspeed value (e.g. ``"25 mph"``, ``"30"``, a list) to mph."""
+    if maxspeed is None:
         return None
-    base = highway[:-5] if highway.endswith("_link") else highway
-    return ARTERIAL_CLASSES.get(base)
+    if isinstance(maxspeed, (list, tuple)):
+        vals = [s for s in (_parse_speed(m) for m in maxspeed) if s is not None]
+        return max(vals) if vals else None        # take the fastest if ambiguous
+    m = re.search(r"\d+\.?\d*", str(maxspeed))
+    return float(m.group()) if m else None
 
 
-def arterial_proximity_score(distance_m: float, reach_m: float, floor: float) -> float:
-    """``floor`` on/adjacent to the arterial, ramping linearly to 1 at its reach.
-
-    ``floor`` is class-dependent (0 for a motorway, ~0.45 for a calm secondary):
-    being beside a secondary street is unpleasant, not life-threatening.
-    """
-    if reach_m <= 0:
-        return 1.0
-    ramp = max(0.0, min(1.0, distance_m / reach_m))
-    return floor + (1.0 - floor) * ramp
+def _base_classes(highway) -> list[str]:
+    """Base highway class(es) for an edge, ``_link`` stripped (handles lists)."""
+    vals = highway if isinstance(highway, (list, tuple)) else [highway]
+    out = []
+    for v in vals:
+        if isinstance(v, str):
+            out.append(v[:-5] if v.endswith("_link") else v)
+    return out
 
 
 def _is_pedestrian(highway) -> bool:
-    """True if the edge itself is a pedestrian-DEDICATED way (protected from cars)."""
-    vals = highway if isinstance(highway, (list, tuple)) else [highway]
-    return any(v in PEDESTRIAN_HIGHWAYS for v in vals)
+    """True if the edge itself is a pedestrian-DEDICATED way (no through traffic)."""
+    return any(c in PEDESTRIAN_HIGHWAYS for c in _base_classes(highway))
 
 
-def eyes_score(poi_count: int, bldg_count: int, *, is_alley: bool) -> float:
-    """Perceived-safety score from nearby frontage and enclosure.
+def _is_arterial(highway) -> bool:
+    """True if the edge IS an arterial road (its danger is on-path, not off-path)."""
+    return any(c in ARTERIAL_REACH_M for c in _base_classes(highway))
 
-    Each count passes through a saturating curve (the first few matter most),
-    POIs weighted above raw buildings (a shopfront has more "eyes" than a blank
-    wall), then an explicit penalty for back-alley geometry.
+
+def on_path_safety(highway, maxspeed) -> float:
+    """Car-safety of the road you walk ALONG: 1.0 on a protected path, else from speed."""
+    if _is_pedestrian(highway):
+        return 1.0
+    speed = _parse_speed(maxspeed)
+    if speed is None:
+        classes = _base_classes(highway)
+        speeds = [DEFAULT_MAXSPEED_MPH[c] for c in classes if c in DEFAULT_MAXSPEED_MPH]
+        speed = max(speeds) if speeds else 25.0    # unknown road ≈ residential
+    return maxspeed_safety(speed)
+
+
+def _arterial_hostility(speed_mph: float) -> float:
+    """Depth of an arterial's off-path penalty = 1 − that speed's on-path safety.
+
+    Driven by the road's ACTUAL posted speed (resolved in _arterial_scores), so a
+    calm 25 mph urban arterial barely penalises a nearby footway while a 40 mph
+    parkway does — the same crash-risk curve on-path uses (on_path_safety)."""
+    return 1.0 - maxspeed_safety(speed_mph)
+
+
+def off_path_safety(distance_m: float, reach_m: float, hostility: float) -> float:
+    """Safety from a nearby arterial: 1 − hostility·falloff (1 at d=0, 0 at reach)."""
+    if reach_m <= 0:
+        return 1.0
+    falloff = max(0.0, 1.0 - distance_m / reach_m)
+    return 1.0 - hostility * falloff
+
+
+def _sat(x: float, sat: float) -> float:
+    """Saturating curve 1 − exp(−x/sat): the first few count most."""
+    return 1.0 - math.exp(-x / sat) if sat > 0 else 0.0
+
+
+def perceived_safety(poi_weight: float, bldg_count: float, openness: float,
+                     *, enclosure_blind: bool, industrial: float = 0.0) -> tuple[float, float]:
+    """"Eyes" felt-safety as a probabilistic OR of three substitutable signals.
+
+    activity (foot-traffic POIs), enclosure (buildings facing the street — dropped
+    when ``enclosure_blind``, i.e. an alley/service edge whose buildings face away)
+    and openness (adjacency to large open space, already in [0,1]). noisy-OR
+    ``1 − ∏(1−s)``: high if ANY is strong, low only when ALL three are weak (the
+    isolated alley); a second strong signal adds a little, never required.
+
+    ``industrial`` (in/near industrial landuse, [0,1]) **discounts enclosure**: a
+    warehouse footprint is a building but provides no residential "eyes", so it
+    shouldn't credit felt-safety. activity and openness are untouched — a genuinely
+    busy industrial frontage keeps its activity.
+
+    **Graded ceiling (re-anchor Lever 1).** The cap is graded by ``openness`` (park /
+    water adjacency), the eyes analog of env-rework B's graded car ceiling:
+    ``eyes_ceil = EYES_CEIL + (1 − EYES_CEIL)·openness``. A normal street edge
+    (openness 0) still tops at ``EYES_CEIL`` (0.85); a genuinely open pedestrian
+    route (pond loop / riverside / HarborWalk, openness→1) may reach toward 1.0 — so
+    ``safety = sqrt(car·eyes)`` can exceed the 0.85 plateau and a car-free, open route
+    can clear 90 ("top band reserved for pedestrian-designed"). Openness is used over
+    ``road_separation`` because a recreational path's safety comes from open
+    sightlines and the people such places draw — a *remote* separated path has fewer
+    eyes, not more — and many designed pedestrian spaces (the pond, the river) hug
+    their access road yet read fully safe.
+
+    Returns ``(eyes, eyes_uncapped)`` — the graded-capped value used in scoring and
+    the raw noisy-OR, the latter stored on the edge so the grading is tunable
+    offline (like ``industrial_exposure`` / ``road_separation``).
     """
-    activity = 1.0 - math.exp(-poi_count / EYES_POI_SAT)
-    presence = 1.0 - math.exp(-bldg_count / EYES_BLDG_SAT)
-    score = EYES_W_POI * activity + EYES_W_BLDG * presence
-    if is_alley:
-        score *= EYES_ALLEY_FACTOR
-    return max(0.0, min(1.0, score))
+    activity  = _sat(poi_weight, EYES_POI_SAT)
+    enclosure = 0.0 if enclosure_blind else _sat(bldg_count, EYES_BLDG_SAT)
+    enclosure *= (1.0 - INDUSTRIAL_ENCLOSURE_DISCOUNT * industrial)
+    noisy_or  = 1.0 - (1.0 - activity) * (1.0 - enclosure) * (1.0 - openness)
+    eyes_ceil = EYES_CEIL + (1.0 - EYES_CEIL) * openness
+    return min(eyes_ceil, noisy_or), noisy_or
 
 
-def _is_alley(highway, service) -> bool:
-    """True for tagged back alleys (``service=alley``)."""
+def _enclosure_blind(highway, service) -> bool:
+    """True where adjacent buildings face AWAY from the edge — alleys & service roads."""
     svals = service if isinstance(service, (list, tuple)) else [service]
-    return any(s == "alley" for s in svals)
+    if any(s == "alley" for s in svals):
+        return True
+    return any(c == "service" for c in _base_classes(highway))
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +328,8 @@ def _is_alley(highway, service) -> bool:
 def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     """Map every edge (u, v, key) → its environment sub-scores.
 
-    Returns a dict keyed by (u, v, key) with
-    ``{arterial_proximity_score, eyes_score, environment_score,
+    Returns a dict keyed by (u, v, key) with ``{maxspeed_safety_score,
+    arterial_proximity_score, car_safety_score, eyes_score, environment_score,
     environment_confidence}``. If the cached feature inputs are missing, returns
     an empty dict (a warning is printed) so the rest of the build still runs —
     edges simply get no environment_score and the factor drops out of the
@@ -200,8 +352,9 @@ def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     edges_gdf["edge_id"] = list(zip(edges_gdf["u"], edges_gdf["v"], edges_gdf["key"]))
 
     keep = ["edge_id", "geometry", "highway"]
-    if "service" in edges_gdf.columns:
-        keep.append("service")
+    for opt in ("service", "maxspeed"):
+        if opt in edges_gdf.columns:
+            keep.append(opt)
     edges_metric = edges_gdf[keep].to_crs(METRIC_CRS)
 
     # Load features once, clipped to the edge bbox + margin (matters for subsets).
@@ -211,88 +364,182 @@ def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     arterials = load_arterials().cx[minx:maxx, miny:maxy]
     buildings = load_buildings().cx[minx:maxx, miny:maxy]
     pois      = load_pois().cx[minx:maxx, miny:maxy]
-    print(f"  Features in area: {len(arterials)} arterials, "
-          f"{len(buildings)} buildings, {len(pois)} POIs")
+    openspace = load_openspace().cx[minx:maxx, miny:maxy]
+    # Optional layers (A: industrial down-weight, B: road separation). Absent file
+    # ⇒ empty ⇒ the signal defaults off (exposure 0 / separation 0 = today's model).
+    landuse = load_landuse().cx[minx:maxx, miny:maxy] if LANDUSE_PATH.exists() else _empty_gdf()
+    roads   = load_roads().cx[minx:maxx, miny:maxy]   if ROADS_PATH.exists()   else _empty_gdf()
+    print(f"  Features in area: {len(arterials)} arterials, {len(buildings)} buildings, "
+          f"{len(pois)} POIs, {len(openspace)} open spaces, {len(landuse)} industrial, "
+          f"{len(roads)} roads")
 
     n = len(edges_metric)
-    art_scores  = _arterial_scores(edges_metric, arterials)
-    poi_counts  = _buffer_counts(edges_metric, pois)
-    bldg_counts = _buffer_counts(edges_metric, buildings)
+    off_scores  = _arterial_scores(edges_metric, arterials)   # off-path safety per edge
+    poi_weight  = _buffer_sum(edges_metric, pois, EYES_BUFFER_M, weight_col="weight")
+    bldg_counts = _buffer_sum(edges_metric, buildings, EYES_BUFFER_M)
+    openness    = _openness_scores(edges_metric, openspace)
+    industrial  = _industrial_scores(edges_metric, landuse)   # A: truck/warehouse exposure
+    separation  = _separation_scores(edges_metric, roads)     # B: distance from any road
 
-    service_col = (edges_metric["service"] if "service" in edges_metric.columns
-                   else [None] * n)
+    service_col  = (edges_metric["service"]  if "service"  in edges_metric.columns else [None] * n)
+    maxspeed_col = (edges_metric["maxspeed"] if "maxspeed" in edges_metric.columns else [None] * n)
 
     index: dict[tuple, dict] = {}
-    for eid, hwy, svc in zip(edges_metric["edge_id"], edges_metric["highway"], service_col):
-        is_alley = _is_alley(hwy, svc)
-        a, near_floor = art_scores.get(eid, (1.0, 1.0))   # no arterial nearby → safe
-        # Protected-path exemption, but only beside a CALM road (a footway hugging
-        # a primary/expressway still feels the traffic).
-        if _is_pedestrian(hwy) and near_floor >= PED_EXEMPT_MIN_FLOOR:
-            a = max(a, PED_ARTERIAL_FLOOR)
-        e = eyes_score(poi_counts.get(eid, 0),
-                       bldg_counts.get(eid, 0),
-                       is_alley=is_alley)
+    for eid, hwy, svc, ms in zip(edges_metric["edge_id"], edges_metric["highway"],
+                                 service_col, maxspeed_col):
+        ind = industrial.get(eid, 0.0)
+        sep = separation.get(eid, 0.0)
+        on  = on_path_safety(hwy, ms)                       # the road you walk along
+        off = 1.0 if _is_arterial(hwy) else off_scores.get(eid, 1.0)  # nearby arterials
+        # B: GRADED ceiling. A road-adjacent path (sep 0) tops at CAR_SAFETY_CEIL;
+        # a genuinely road-separated path (sep→1, a greenway / ped bridge) climbs
+        # toward 1.0. min() keeps low/dangerous values untouched (discrimination).
+        ceil = CAR_SAFETY_CEIL + (1.0 - CAR_SAFETY_CEIL) * sep
+        car  = min(ceil, on, off)
+        # A: industrial corridors carry truck danger that maxspeed misses — penalise.
+        car  = car * (1.0 - INDUSTRIAL_CAR_PENALTY * ind)
+        e, e_unc = perceived_safety(
+            poi_weight.get(eid, 0.0), bldg_counts.get(eid, 0.0), openness.get(eid, 0.0),
+            enclosure_blind=_enclosure_blind(hwy, svc), industrial=ind)
         index[eid] = {
-            "arterial_proximity_score": round(a, 4),
+            "maxspeed_safety_score":    round(on, 4),
+            "arterial_proximity_score": round(off, 4),
+            "car_safety_score":         round(car, 4),
             "eyes_score":               round(e, 4),
-            "environment_score":        round(math.sqrt(a * e), 4),
+            "environment_score":        round(math.sqrt(car * e), 4),
             "environment_confidence":   ENV_CONFIDENCE,
+            # Sub-signals exposed for diagnostics + offline lever isolation: recompute
+            # car/env with INDUSTRIAL_CAR_PENALTY=0, sep→0, or a different EYES_CEIL
+            # grading (eyes_uncapped is the pre-cap noisy-OR) without a rebuild.
+            "industrial_exposure":      round(ind, 4),
+            "road_separation":          round(sep, 4),
+            "eyes_uncapped":            round(e_unc, 4),
+            "openness_score":           round(openness.get(eid, 0.0), 4),
         }
     print(f"  Scored environment for {len(index)}/{n} edges")
     return index
+
+
+def _openness_scores(
+    edges_metric: gpd.GeoDataFrame,
+    openspace:    gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge openness: 1 adjacent to a large open space, ramping to 0 at
+    OPENNESS_REACH_M (one nearest-open-space join)."""
+    if openspace.empty:
+        return {}
+    joined = gpd.sjoin_nearest(
+        edges_metric[["edge_id", "geometry"]],
+        openspace[["geometry"]],
+        how="left",
+        distance_col="dist",
+    )
+    joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    scores: dict[tuple, float] = {}
+    for eid, dist in zip(joined["edge_id"], joined["dist"]):
+        if pd.isna(dist):
+            scores[eid] = 0.0
+        else:
+            scores[eid] = max(0.0, 1.0 - float(dist) / OPENNESS_REACH_M)
+    return scores
+
+
+def _industrial_scores(
+    edges_metric: gpd.GeoDataFrame,
+    landuse:      gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge industrial exposure (A): 1 on/inside an industrial polygon, ramping
+    to 0 at INDUSTRIAL_REACH_M (one nearest-polygon join). Missing/empty ⇒ {} (0)."""
+    if landuse.empty:
+        return {}
+    joined = gpd.sjoin_nearest(
+        edges_metric[["edge_id", "geometry"]],
+        landuse[["geometry"]],
+        how="left",
+        distance_col="dist",
+    )
+    joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    scores: dict[tuple, float] = {}
+    for eid, dist in zip(joined["edge_id"], joined["dist"]):
+        scores[eid] = 0.0 if pd.isna(dist) else max(0.0, 1.0 - float(dist) / INDUSTRIAL_REACH_M)
+    return scores
+
+
+def _separation_scores(
+    edges_metric: gpd.GeoDataFrame,
+    roads:        gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge road separation (B): 0 on top of a road, ramping to 1 once the
+    nearest car-carrying road is ≥ SEPARATION_REACH_M away (one nearest-road join).
+    Missing/empty roads layer ⇒ {} (separation 0 ⇒ today's flat car ceiling)."""
+    if roads.empty:
+        return {}
+    joined = gpd.sjoin_nearest(
+        edges_metric[["edge_id", "geometry"]],
+        roads[["geometry"]],
+        how="left",
+        distance_col="dist",
+    )
+    joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    scores: dict[tuple, float] = {}
+    for eid, dist in zip(joined["edge_id"], joined["dist"]):
+        scores[eid] = 0.0 if pd.isna(dist) else min(1.0, float(dist) / SEPARATION_REACH_M)
+    return scores
 
 
 def _arterial_scores(
     edges_metric: gpd.GeoDataFrame,
     arterials:    gpd.GeoDataFrame,
 ) -> dict[tuple, float]:
-    """Per-edge arterial_proximity_score via one nearest-arterial join."""
+    """Per-edge OFF-PATH safety (1 − nearest-arterial hostility·falloff) via one join."""
     if arterials.empty:
         return {}
 
     art = arterials.copy()
-    classes = art["highway"].map(lambda h: _arterial_class(h) or _DEFAULT_CLASS)
-    art["reach"] = [rf[0] for rf in classes]
-    art["floor"] = [rf[1] for rf in classes]
+    bases = art["highway"].map(lambda h: (_base_classes(h) or ["secondary"])[0])
+    # Resolve each arterial's speed: its real maxspeed tag if present, else the
+    # class default. Hostility (penalty DEPTH) follows speed; reach (penalty
+    # DISTANCE) stays class-based — a big road's threat extends further regardless
+    # of posted speed.
+    ms_col = art["maxspeed"] if "maxspeed" in art.columns else [None] * len(art)
+    speeds = [(_parse_speed(m) or DEFAULT_MAXSPEED_MPH.get(b, 30.0))
+              for b, m in zip(bases, ms_col)]
+    art["reach"]     = [ARTERIAL_REACH_M.get(b, _DEFAULT_REACH_M) for b in bases]
+    art["hostility"] = [_arterial_hostility(s) for s in speeds]
     joined = gpd.sjoin_nearest(
         edges_metric[["edge_id", "geometry"]],
-        art[["geometry", "reach", "floor"]],
+        art[["geometry", "reach", "hostility"]],
         how="left",
         distance_col="dist",
     )
     # Ties (equidistant arterials) yield multiple rows — keep the nearest.
     joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
 
-    scores: dict[tuple, tuple[float, float]] = {}
-    for eid, dist, reach, floor in zip(
-        joined["edge_id"], joined["dist"], joined["reach"], joined["floor"]
+    scores: dict[tuple, float] = {}
+    for eid, dist, reach, hostility in zip(
+        joined["edge_id"], joined["dist"], joined["reach"], joined["hostility"]
     ):
         if pd.isna(dist) or pd.isna(reach):
-            scores[eid] = (1.0, 1.0)
+            scores[eid] = 1.0
         else:
-            # store (proximity score, nearest arterial's class floor) — the floor
-            # gates the pedestrian exemption in build_environment_index.
-            scores[eid] = (arterial_proximity_score(float(dist), float(reach), float(floor)),
-                           float(floor))
+            scores[eid] = off_path_safety(float(dist), float(reach), float(hostility))
     return scores
 
 
-def _buffer_counts(
+def _buffer_sum(
     edges_metric: gpd.GeoDataFrame,
     features:     gpd.GeoDataFrame,
-) -> dict[tuple, int]:
-    """Count features within EYES_BUFFER_M of each edge (one buffered sjoin)."""
+    buffer_m:     float,
+    weight_col:   str | None = None,
+) -> dict[tuple, float]:
+    """Per-edge count (or summed ``weight_col``) of features within ``buffer_m``."""
     if features.empty:
         return {}
 
     buffered = edges_metric[["edge_id", "geometry"]].copy()
-    buffered["geometry"] = edges_metric.geometry.buffer(EYES_BUFFER_M)
-    joined = gpd.sjoin(
-        buffered,
-        features[["geometry"]],
-        how="inner",
-        predicate="intersects",
-    )
-    counts = joined.groupby("edge_id").size()
-    return {eid: int(c) for eid, c in counts.items()}
+    buffered["geometry"] = edges_metric.geometry.buffer(buffer_m)
+    cols = ["geometry"] + ([weight_col] if weight_col else [])
+    joined = gpd.sjoin(buffered, features[cols], how="inner", predicate="intersects")
+    grouped = (joined.groupby("edge_id")[weight_col].sum() if weight_col
+               else joined.groupby("edge_id").size())
+    return {eid: float(x) for eid, x in grouped.items()}

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import networkx as nx
 
@@ -47,10 +47,19 @@ from walkability.routing import clip
 from walkability.routing.cost import ALPHA_DEFAULT, edge_cost
 from walkability.scoring.factors import (
     RESTRICTED_FOOT_ACCESS,
+    _EMPTY_WALK,
     _as_str,
+    combine_categories,
+    compress_comfort,
+    edge_category_scores,
     edge_walkability,
 )
-from walkability.scoring.weights import FACTOR_WEIGHTS, ROUTE_SCORE_EXPONENT
+from walkability.scoring.weights import (
+    CATEGORY_FLOOR,
+    FACTOR_WEIGHTS,
+    ROUTE_DIMENSION_EXPONENTS,
+    ROUTE_SCORE_EXPONENT,
+)
 
 # Re-rank / expansion tuning ------------------------------------------------
 K_DEFAULT:        int   = 5      # routes to surface by default
@@ -64,6 +73,24 @@ ALT_MAX_STRETCH:  float = 0.30   # an alternative is only kept if its true cost 
                                  # within (1+this)× the optimum — keeps the candidate
                                  # pool near-optimal (like Yen's k-shortest) so the
                                  # walk_score re-rank can't surface a wildly long route
+
+# Phase-2 side refinement (see find_routes / clip.clip_to_route). After the
+# walkability-aware corridor is found (phase 1), each candidate is re-optimised
+# for LENGTH inside a narrow tube around it (phase 2): once the corridor is
+# fixed, minimising length minimises gratuitous street-crossings / zigzag (an
+# unnecessary crossing is strictly longer). A phase-3 score check reverts to the
+# phase-1 route if the shorter path is materially less walkable.
+REFINE_ALPHA:      float = 0.0   # phase-2 cost: 0 = pure length (crossing-min)
+REFINE_SCORE_TOL:  float = 0.04  # max walk_score drop accepted to take the shorter route
+REFINE_CROSSING_CREDIT: float = 0.05  # extra walk_score drop tolerated PER crossing the
+                                 # shorter route removes. Phase-1 racks up free crossings
+                                 # (crossings aren't in the cost), inflating its walk_score
+                                 # by weaving between parallel paths; this lets the guard
+                                 # recognise that some of R1's walk lead is that illusory
+                                 # harvest and accept a fewer-crossing R2 it would otherwise
+                                 # revert (the Seaport case). Only ever widens the allowance
+                                 # when R2 cuts crossings, so it can't admit a worse route
+                                 # that doesn't.
 
 # Clip widen-and-retry tuning -----------------------------------------------
 WIDEN_FACTOR:  float = 1.7    # multiply detour_factor each time we widen
@@ -79,12 +106,17 @@ class RouteResult:
     walk_score and confidence are length-weighted means over the route's
     edges (consistent with the length-based cost), both in [0, 1].
     """
-    nodes:        list[int]
-    edges:        list[tuple]      # (u, v, key)
-    total_length: float            # metres
-    total_cost:   float
-    walk_score:   float
-    confidence:   float
+    nodes:         list[int]
+    edges:         list[tuple]      # (u, v, key)
+    total_length:  float            # metres
+    total_cost:    float
+    walk_score:    float
+    confidence:    float
+    crossing_count: int = 0         # highway=crossing nodes traversed (excl. origin)
+    # Floored route-level per-dimension values (safety/comfort/path) that walk_score
+    # combines — the two-level aggregate's intermediate, exposed for the survey and
+    # diagnostics so the displayed bars match the score exactly.
+    dimension_scores: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +145,10 @@ def _routable_digraph(
     penalty: any simple path from O to D uses an out-edge of O only as its first
     hop and an in-edge of D only as its last, so this is exactly the "customer at
     your own destination" exemption (see ``edge_cost(is_terminal=...)``).
+
+    Crossings are NOT penalised here — they are handled structurally by the
+    phase-2 length refinement in ``find_routes`` (minimising length inside the
+    corridor tube removes gratuitous crossings without a soft cost term).
     """
     DG = nx.DiGraph()
     for u, v, key, data in G.edges(keys=True, data=True):
@@ -130,6 +166,41 @@ def _routable_digraph(
 # Route reconstruction
 # ---------------------------------------------------------------------------
 
+def _aggregate_route_dimensions(
+    cat_by_edge: list[tuple[dict[str, float], float]],
+) -> dict[str, float]:
+    """Floored route-level per-dimension values (the Level-1 half, route-wide).
+
+    Each dimension is aggregated *only over the edges where it is present* with its
+    own exponent (``ROUTE_DIMENSION_EXPONENTS``; lower → more worst-segment-
+    sensitive), floored to ``[CATEGORY_FLOOR, 1]``. A dimension absent on every edge
+    simply drops out (never imputed). ``_build_route`` then combines these with
+    ``combine_categories`` — exactly the cross-category combine used for a single
+    edge, one level up. Returned as a dict so the survey/diagnostics can show the
+    same dimension values the score is built from.
+    """
+    per_dim: dict[str, list[tuple[float, float]]] = {}  # dim -> [(value, length), ...]
+    for cats, length in cat_by_edge:
+        for dim, value in cats.items():
+            per_dim.setdefault(dim, []).append((value, length))
+
+    dim_values: dict[str, float] = {}
+    for dim, items in per_dim.items():
+        p = ROUTE_DIMENSION_EXPONENTS.get(dim, ROUTE_SCORE_EXPONENT)
+        lsum = sum(L for _, L in items)
+        if lsum > 0.0:
+            mean_pow = sum((v ** p) * L for v, L in items) / lsum
+        else:
+            # Degenerate zero-length route: unweighted over the present edges.
+            mean_pow = sum(v ** p for v, _ in items) / len(items)
+        dim_values[dim] = min(1.0, max(CATEGORY_FLOOR, mean_pow ** (1.0 / p)))
+
+    # Comfort top-compression applied once to the route-level aggregate (the power
+    # mean is over raw per-edge comfort; the trim lands here), so the stored/exposed
+    # dimension_scores match what combine_categories scores. See factors.compress_comfort.
+    return compress_comfort(dim_values)
+
+
 def _build_route(
     G: nx.MultiDiGraph,
     DG: nx.DiGraph,
@@ -138,11 +209,15 @@ def _build_route(
 ) -> RouteResult:
     """Assemble a RouteResult from a node path, scoring against original edges.
 
-    The route's ``walk_score`` is a length-weighted **power mean** of its edge
-    scores (exponent ``ROUTE_SCORE_EXPONENT`` < 1), so one genuinely bad block
-    drags the whole route down rather than being averaged away — a route is only
-    as pleasant as its worst stretch. ``confidence`` stays a plain length-weighted
-    mean (it is only a tiebreaker).
+    The route's ``walk_score`` is a two-level HDI aggregate built *at the route
+    level* (``_aggregate_route_dimensions``): each dimension (safety/comfort/path)
+    is aggregated across the route's edges with its own length-weighted **power
+    mean** (``ROUTE_DIMENSION_EXPONENTS`` < 1, worst-segment bias per dimension),
+    then the route-level dimension values are combined with the same
+    ``CATEGORY_WEIGHTS`` geometric mean as a single edge. Aggregating per dimension
+    *before* the cross-category combine means one bad safety block can't be bought
+    back by good comfort/path on the same edge. ``confidence`` stays a plain
+    length-weighted mean (it is only a tiebreaker).
 
     The first and last edges are terminal: if such an edge is restricted-access
     (a customers-only zoo entrance, a private drive at the destination) its
@@ -151,7 +226,8 @@ def _build_route(
     chosen route nor tanks its reported score.
     """
     edges: list[tuple] = []
-    per_edge: list[tuple[float, float, float]] = []  # (walk, confidence, length)
+    cat_by_edge: list[tuple[dict[str, float], float]] = []  # (category scores, length)
+    conf_lengths: list[tuple[float, float]] = []            # (confidence, length)
     total_length = 0.0
     total_cost = 0.0
 
@@ -171,23 +247,31 @@ def _build_route(
                 k: val for k, val in data.items()
                 if k not in ("foot_access", "walk_score", "walk_confidence")
             }
-        walk, conf = edge_walkability(data, weights)
+        cats = edge_category_scores(data, weights)
+        _, conf = edge_walkability(data, weights)
 
         edges.append((u, v, key))
-        per_edge.append((walk, conf, length))
+        cat_by_edge.append((cats, length))
+        conf_lengths.append((conf, length))
         total_length += length
         total_cost += cost
 
-    p = ROUTE_SCORE_EXPONENT
+    dimension_scores = _aggregate_route_dimensions(cat_by_edge)
+    walk_score = combine_categories(dimension_scores) if dimension_scores else _EMPTY_WALK
     if total_length > 0.0:
-        walk_pow = sum((w ** p) * L for w, _, L in per_edge) / total_length
-        confidence = sum(c * L for _, c, L in per_edge) / total_length
+        confidence = sum(c * L for c, L in conf_lengths) / total_length
     else:
-        # Degenerate zero-length path: fall back to unweighted means.
-        n = max(len(per_edge), 1)
-        walk_pow = sum(w ** p for w, _, _ in per_edge) / n
-        confidence = sum(c for _, c, _ in per_edge) / n
-    walk_score = walk_pow ** (1.0 / p)
+        # Degenerate zero-length path: fall back to an unweighted mean.
+        n = max(len(conf_lengths), 1)
+        confidence = sum(c for c, _ in conf_lengths) / n
+
+    # Crossings traversed (informational + the optional re-rank tiebreak). Exclude
+    # the origin node — you never cross at your own start (matches the cost penalty
+    # in _routable_digraph, which charges on arrival at a node).
+    crossing_count = sum(
+        1 for n in nodes[1:]
+        if _as_str(G.nodes[n].get("highway")) == "crossing"
+    )
 
     return RouteResult(
         nodes=nodes,
@@ -196,6 +280,8 @@ def _build_route(
         total_cost=total_cost,
         walk_score=walk_score,
         confidence=confidence,
+        crossing_count=crossing_count,
+        dimension_scores=dimension_scores,
     )
 
 
@@ -317,6 +403,60 @@ def _hugs_boundary(G, route: RouteResult, o_node, d_node, budget: float, eps: fl
 
 
 # ---------------------------------------------------------------------------
+# Phase-2 side refinement (length-min within a tube around the corridor)
+# ---------------------------------------------------------------------------
+
+def _refine_route(
+    G: nx.MultiDiGraph,
+    r1: RouteResult,
+    o_node,
+    d_node,
+    weights: dict[str, float],
+) -> RouteResult:
+    """Re-minimise LENGTH inside a tube around corridor ``r1`` (phase 2), keeping
+    the result only if it stays within a **crossing-aware** walk_score tolerance
+    (phase 3).
+
+    Once the corridor is fixed, minimising length removes gratuitous crossings /
+    zigzag (an unnecessary crossing is strictly longer). The tube
+    (``clip.clip_to_route``) keeps the path on r1's streets; the score check
+    reverts to r1 if the shorter path is materially less walkable (the zigzag was
+    avoiding a genuinely bad block).
+
+    The tolerance is ``REFINE_SCORE_TOL`` widened by ``REFINE_CROSSING_CREDIT`` per
+    crossing that ``r2`` removes: because crossings are free in the cost, r1's
+    walk_score is partly inflated by weaving between parallel paths to harvest the
+    best-scoring segment at each step, so a fewer-crossing r2 that scores a little
+    lower is often the genuinely better route (the Seaport case). The credit only
+    *widens* the allowance when r2 cuts crossings, so it can never admit a longer-
+    or-equal-crossing route that is simply worse.
+    """
+    tube = clip.clip_to_route(G, r1.nodes, clip.TUBE_WIDTH_M)
+    if o_node not in tube or d_node not in tube:
+        return r1
+    # Phase 2 picks among SIDEWALKS — exclude `service` shortcuts (a parking-lot /
+    # back-alley cut is shorter but unpleasant; pure length-min would take it, and
+    # the whole-route guard misses one diluted bad block). Service edges already on
+    # R1 are kept so R1 stays reproducible (refinement never lengthens).
+    r1_edges = set(r1.edges)
+    keep = [(u, v, k) for u, v, k, dd in tube.edges(keys=True, data=True)
+            if _as_str(dd.get("highway")) != "service" or (u, v, k) in r1_edges]
+    sub = tube.edge_subgraph(keep)
+    if o_node not in sub or d_node not in sub:
+        return r1
+    cands = _collect_candidates(
+        sub, o_node, d_node, REFINE_ALPHA,
+        k=1, max_candidates=1, min_confidence=0.0, weights=weights,
+    )
+    if not cands:
+        return r1
+    r2 = cands[0]
+    crossings_saved = max(0, r1.crossing_count - r2.crossing_count)
+    allowance = REFINE_SCORE_TOL + REFINE_CROSSING_CREDIT * crossings_saved
+    return r2 if r2.walk_score >= r1.walk_score - allowance else r1
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -327,6 +467,7 @@ def find_routes(
     *,
     alpha: float = ALPHA_DEFAULT,
     weights: dict[str, float] = FACTOR_WEIGHTS,
+    refine_sides: bool = True,
     k: int = K_DEFAULT,
     max_candidates: int = MAX_CANDIDATES,
     min_confidence: float = MIN_CONFIDENCE,
@@ -347,6 +488,10 @@ def find_routes(
         Per-factor walkability weights (see scoring/weights.py:FACTOR_WEIGHTS).
         Defaults to the FACTOR_WEIGHTS object so the baked-score fast path is
         used; UI sliders pass a different dict and force a per-edge recompute.
+    refine_sides :
+        If True (default) and alpha>0, apply the phase-2 tube refinement (re-
+        minimise length within each corridor to drop zigzag crossings). Pass
+        False to get the phase-1-only "previous" routing (for A/B comparison).
     k :
         Number of candidate routes to evaluate (and, normally, return).
     max_candidates :
@@ -367,8 +512,8 @@ def find_routes(
     list[RouteResult] :
         Best route first. Empty if origin and destination are disconnected.
     """
-    o_node = clip.snap_to_node(G, *orig, routable_only=True)
-    d_node = clip.snap_to_node(G, *dest, routable_only=True)
+    o_node = clip.snap_to_node(G, *orig, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
+    d_node = clip.snap_to_node(G, *dest, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
     if o_node == d_node:
         return []
 
@@ -412,12 +557,32 @@ def find_routes(
     # alpha=0 means "ignore walkability" → keep pure cost (length) order, shortest
     # first, so it's a true shortest-path floor. For alpha>0 the user is weighting
     # walkability, so surface the most walkable candidate (confidence breaks ties).
+    # This ranks the CORRIDORS on their full walkable route, BEFORE phase-2
+    # shortening — so the corridor choice isn't re-litigated on the shortened path.
     if alpha > 0:
         best_walk = max(c.walk_score for c in candidates)
         candidates.sort(
             key=lambda r: _rank_score(r, best_walk, tie_epsilon, conf_beta),
             reverse=True,
         )
+
+    # Phase 2+3: refine each corridor IN RANK ORDER for LENGTH within a narrow
+    # tube — drops zigzag / gratuitous crossings while keeping the corridor. No
+    # re-sort after (the corridor is already chosen; phase 2 only shortens it, so
+    # the result is never longer than the phase-1 route). Skipped at alpha=0 (the
+    # corridor is already the shortest path) and when disabled (A/B against the
+    # phase-1-only model the survey was ground-checked on).
+    if refine_sides and alpha > 0:
+        refined: list[RouteResult] = []
+        seen: set[tuple] = set()
+        for r1 in candidates:
+            r2 = _refine_route(G, r1, o_node, d_node, weights)
+            sig = tuple(r2.nodes)
+            if sig not in seen:
+                seen.add(sig)
+                refined.append(r2)
+        candidates = refined
+
     return candidates
 
 

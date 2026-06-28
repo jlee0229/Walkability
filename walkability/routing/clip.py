@@ -33,15 +33,34 @@ import math
 import networkx as nx
 import numpy as np
 
-from walkability.scoring.factors import EXCLUDED_FOOT_ACCESS, _as_str
+from walkability.scoring.factors import EXCLUDED_FOOT_ACCESS, _as_float, _as_str
 
 # Clip tuning ---------------------------------------------------------------
 DETOUR_FACTOR_DEFAULT: float = 1.5    # ellipse budget = this × O–D distance ...
 MIN_BUFFER_M:          float = 400.0  # ... but never tighter than O–D + this
 EARTH_RADIUS_M:        float = 6_371_000.0
 
+# Phase-2 side-refinement tube (see clip_to_route / router.find_routes). The
+# half-width of the corridor around a phase-1 route within which length is
+# re-minimised. Wide enough to include both sidewalks of the widest street (so a
+# side-switch is reachable), narrow enough to exclude the next parallel STREET
+# (~block width), so phase 2 cannot wander to a different corridor. Kept at 35 m:
+# 50 m was tried but let JP Centre (#10) jump to a shorter PARALLEL corridor
+# (the "too wide" failure) instead of switching sides, and didn't fix its real
+# segs #1-2 side issue — that needs the safety-value fix, not a wider tube.
+TUBE_WIDTH_M: float = 35.0
+
+# Walkability-biased snapping: an address snaps to the node minimising
+# dist_m + (1 − highway_score)·SNAP_WALK_BIAS_M, so it prefers a sidewalk/footway
+# a little farther over an arterial centreline right next to it (which would force
+# the route to start ON the arterial). ~50 m means a footway up to ~that much
+# farther can win over a road node, but a distant footway never beats a close one.
+SNAP_WALK_BIAS_M: float = 50.0
+_DEG_TO_M: float = math.pi / 180.0 * EARTH_RADIUS_M
+
 _COORD_CACHE_KEY = "_walk_coord_cache"
 _ROUTABLE_MASK_KEY = "_walk_routable_mask"
+_NODE_QUALITY_KEY = "_walk_node_quality"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +122,36 @@ def _routable_mask(G: nx.MultiDiGraph) -> np.ndarray:
     return mask
 
 
+def _node_walk_quality(G: nx.MultiDiGraph) -> np.ndarray:
+    """Per-node best road-type walkability (max ``highway_score`` over incident
+    edges), aligned to ``_node_coords`` order and memoised on ``G.graph``.
+
+    Used to bias snapping toward pedestrian-friendly nodes: a node touching a
+    footway scores ~0.9, one only on a primary ~0.08, so the snap prefers the
+    sidewalk over the arterial centreline. Uses ``highway_score`` (road type),
+    not the composite walk_score, so it keys purely on "is this a walking way or
+    a road" — independent of surface/environment.
+    """
+    cache = G.graph.get(_NODE_QUALITY_KEY)
+    key = (G.number_of_nodes(), G.number_of_edges())
+    if cache is not None and cache[0] == key:
+        return cache[1]
+
+    ids, _, _ = _node_coords(G)
+    index = {n: i for i, n in enumerate(ids)}
+    quality = np.zeros(len(ids), dtype=float)
+    for u, v, data in G.edges(data=True):
+        hs = _as_float(data.get("highway_score"))
+        if hs is None:
+            continue
+        for n in (u, v):
+            i = index[n]
+            if hs > quality[i]:
+                quality[i] = hs
+    G.graph[_NODE_QUALITY_KEY] = (key, quality)
+    return quality
+
+
 # ---------------------------------------------------------------------------
 # Distance helpers
 # ---------------------------------------------------------------------------
@@ -121,7 +170,8 @@ def haversine_m(lat1, lon1, lat2, lon2):
 # Node snapping (vectorised)
 # ---------------------------------------------------------------------------
 
-def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float, routable_only: bool = False):
+def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float,
+                 routable_only: bool = False, walk_bias: float = 0.0):
     """Return the id of the graph node nearest to (lat, lon).
 
     Vectorised equirectangular nearest-node search over the cached coordinate
@@ -132,6 +182,12 @@ def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float, routable_only: bool
     stubs) are excluded, so an address never snaps to a dead end that can't be
     routed from. Falls back to the unrestricted nearest node if, implausibly,
     no routable node exists.
+
+    With ``walk_bias > 0`` (metres), the choice minimises ``dist_m + (1 −
+    highway_score)·walk_bias`` instead of raw distance, so an address prefers a
+    nearby sidewalk/footway over an arterial centreline a few metres closer (which
+    would otherwise force the route to start ON the arterial). ``walk_bias = 0``
+    (the default) is the exact nearest node.
     """
     ids, lats, lons = _node_coords(G)
     if not ids:
@@ -140,11 +196,16 @@ def snap_to_node(G: nx.MultiDiGraph, lat: float, lon: float, routable_only: bool
     dy = lats - lat
     dx = (lons - lon) * cos_lat
     d2 = dy * dy + dx * dx
+    if walk_bias > 0.0:
+        # metres ≈ angular distance × earth radius (the lat/lon are in degrees)
+        cost = np.sqrt(d2) * _DEG_TO_M + (1.0 - _node_walk_quality(G)) * walk_bias
+    else:
+        cost = d2
     if routable_only:
         mask = _routable_mask(G)
         if mask.any():
-            d2 = np.where(mask, d2, np.inf)
-    return ids[int(np.argmin(d2))]
+            cost = np.where(mask, cost, np.inf)
+    return ids[int(np.argmin(cost))]
 
 
 # ---------------------------------------------------------------------------
@@ -194,3 +255,57 @@ def clip_to_ellipse(
     mask = sum_dist <= budget
     keep = [ids[i] for i in np.nonzero(mask)[0]]
     return G.subgraph(keep), budget
+
+
+# ---------------------------------------------------------------------------
+# Route tube clip (phase-2 side refinement)
+# ---------------------------------------------------------------------------
+
+def clip_to_route(G: nx.MultiDiGraph, route_nodes, width_m: float = TUBE_WIDTH_M) -> nx.MultiDiGraph:
+    """Return a ``G.subgraph`` view of nodes within ``width_m`` of the route polyline.
+
+    The polyline is the piecewise-linear path through ``route_nodes`` (a node-id
+    sequence). Used by phase-2 refinement: re-routing for length inside this tube
+    keeps the phase-1 corridor while letting the path pick the shorter side and
+    drop zigzag crossings. The route's own nodes (incl. O and D) are always kept.
+
+    Vectorised point-to-segment distance in a local equirectangular frame (Δlon
+    scaled by cos(lat)); numpy only, no shapely — keeps the query path light.
+    """
+    if route_nodes is None or len(route_nodes) < 2:
+        return G.subgraph(list(route_nodes or []))
+
+    ids, lats, lons = _node_coords(G)
+    rlat = np.fromiter((G.nodes[n]["y"] for n in route_nodes), dtype=float, count=len(route_nodes))
+    rlon = np.fromiter((G.nodes[n]["x"] for n in route_nodes), dtype=float, count=len(route_nodes))
+
+    lat0, lon0 = float(rlat.mean()), float(rlon.mean())
+    cos0 = math.cos(math.radians(lat0))
+    # planar metres relative to (lat0, lon0)
+    px = (lons - lon0) * cos0 * _DEG_TO_M
+    py = (lats - lat0) * _DEG_TO_M
+    rx = (rlon - lon0) * cos0 * _DEG_TO_M
+    ry = (rlat - lat0) * _DEG_TO_M
+
+    # bbox prefilter so the per-segment maths runs on few nodes
+    in_bbox = ((px >= rx.min() - width_m) & (px <= rx.max() + width_m)
+               & (py >= ry.min() - width_m) & (py <= ry.max() + width_m))
+    cand = np.nonzero(in_bbox)[0]
+    if cand.size == 0:
+        return G.subgraph(list(route_nodes))
+    cpx, cpy = px[cand], py[cand]
+
+    min_d2 = np.full(cand.size, np.inf)
+    for i in range(len(rx) - 1):
+        ax, ay, bx, by = rx[i], ry[i], rx[i + 1], ry[i + 1]
+        abx, aby = bx - ax, by - ay
+        L2 = abx * abx + aby * aby
+        if L2 == 0.0:
+            d2 = (cpx - ax) ** 2 + (cpy - ay) ** 2
+        else:
+            t = np.clip(((cpx - ax) * abx + (cpy - ay) * aby) / L2, 0.0, 1.0)
+            d2 = (cpx - (ax + t * abx)) ** 2 + (cpy - (ay + t * aby)) ** 2
+        np.minimum(min_d2, d2, out=min_d2)
+
+    keep = [ids[cand[i]] for i in np.nonzero(min_d2 <= width_m * width_m)[0]]
+    return G.subgraph(keep)

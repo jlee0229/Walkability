@@ -33,7 +33,6 @@ from walkability.graph.build import ENRICHED_PATH, load_graph
 from walkability.routing.cost import ALPHA_DEFAULT
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import (
-    edge_category_scores,
     edge_walkability,
     _as_float,
     _as_str,
@@ -111,6 +110,134 @@ SURVEY_ROUTES: list[dict] = [
         "area": "Jamaica Plain (Centre St)",
         "origin": (42.3169, -71.1099), "dest": (42.3138, -71.1131),
         "look_for": "Neighbourhood main street: shops + residential, moderate traffic, far from highways. A 'good but not perfect' calibration anchor.",
+    },
+    # --- 10 new routes (2026-06-22 ground-truth expansion) ---
+    {
+        "name": "allston_harvard_ave",
+        "area": "Allston (Harvard Ave commercial)",
+        "origin": (42.3530, -71.1314), "dest": (42.3510, -71.1338),
+        "look_for": "Student commercial strip: cheap eats, busy traffic, narrow worn sidewalks. Mediocre-but-lively. Does eyes-on-street over-inflate a gritty busy street?",
+    },
+    {
+        "name": "fenway_kenmore_brookline_ave",
+        "area": "Fenway / Kenmore (Brookline Ave)",
+        "origin": (42.3460, -71.0975), "dest": (42.3437, -71.0948),
+        "look_for": "Busy near-stadium streets next to the Riverway/Fens park. Check whether openness (park) lifts safety where car traffic is actually heavy.",
+    },
+    {
+        "name": "dorchester_fields_corner",
+        "area": "Dorchester (Dot Ave / Fields Corner)",
+        "origin": (42.3001, -71.0592), "dest": (42.2978, -71.0615),
+        "look_for": "Transit main street, arterial-ish, mixed commercial/residential. A non-core neighbourhood anchor — is the arterial penalty right here?",
+    },
+    {
+        "name": "roslindale_square",
+        "area": "Roslindale (Roslindale Village)",
+        "origin": (42.2872, -71.1295), "dest": (42.2850, -71.1268),
+        "look_for": "Walkable outer-neighbourhood square: shops, narrow streets, calm. A good outer-Boston anchor — does the model rate the village core high?",
+    },
+    {
+        "name": "charlestown_main_thompson_sq",
+        "area": "Charlestown (Main St / Thompson Sq)",
+        "origin": (42.3772, -71.0623), "dest": (42.3795, -71.0638),
+        "look_for": "Historic walkable Charlestown — the GOOD contrast to car-dominated Sullivan Sq. Narrow, brick, calm. Should score high.",
+    },
+    {
+        "name": "west_roxbury_centre_st",
+        "area": "West Roxbury (Centre St)",
+        "origin": (42.2855, -71.1600), "dest": (42.2834, -71.1638),
+        "look_for": "Suburban-feeling main street, wider roads, more parking, calmer. Tests the model at the leafy/low-density end of the spectrum.",
+    },
+    {
+        "name": "mission_hill_tremont",
+        "area": "Mission Hill (Tremont St)",
+        "origin": (42.3325, -71.0985), "dest": (42.3301, -71.0959),
+        "look_for": "Hilly, institutional edges, triple-deckers. Elevation isn't a factor yet — flag if a steep block scores higher than it walks.",
+    },
+    {
+        "name": "longwood_medical_area",
+        "area": "Longwood Medical Area (Longwood Ave)",
+        "origin": (42.3375, -71.1030), "dest": (42.3398, -71.1056),
+        "look_for": "Institutional canyon: wide sidewalks, heavy foot traffic, but big hospital-block crossings + buses. Does comfort+eyes over-inflate a busy medical corridor?",
+    },
+    {
+        "name": "chinatown_beach_essex",
+        "area": "Chinatown (Beach St / Essex St)",
+        "origin": (42.3515, -71.0615), "dest": (42.3501, -71.0590),
+        "look_for": "Extremely dense, narrow, lively but chaotic; tunnel/artery edges nearby. Eyes-on-street maxed — does anything pull it down where it should?",
+    },
+    {
+        "name": "south_boston_broadway",
+        "area": "South Boston (West Broadway)",
+        "origin": (42.3370, -71.0500), "dest": (42.3356, -71.0540),
+        "look_for": "Residential main street, shops, moderate traffic, decent grid. A 'good but not perfect' anchor like JP — check consistency across neighbourhoods.",
+    },
+
+    # ---- 2026-06-26 outlier batch: tail-spanning routes to calibrate the
+    # distribution re-anchor. The current 20 are all mid-range urban walks
+    # (84-89); these probe the TOP (pedestrian-designed / car-free — does the
+    # model fail to reward them?), the BOTTOM (hostile parkways/arterials), and
+    # LONG/COMPLEX (multi-km, many crossings). Key calibration question for the
+    # top group: where SHOULD a car-free greenway land vs a normal sidewalk?
+    {
+        "name": "esplanade_charles_river",
+        "area": "Charles River Esplanade (riverside path)",
+        "origin": (42.3543, -71.0900), "dest": (42.3585, -71.0730),
+        "look_for": "TOP-END: car-free riverside park path. Should this be near the TOP (>90)? It currently scores ~86, same as an ordinary sidewalk — where SHOULD it land?",
+    },
+    {
+        "name": "sw_corridor_park",
+        "area": "Southwest Corridor Park (linear park)",
+        "origin": (42.3410, -71.0810), "dest": (42.3300, -71.0940),
+        "look_for": "TOP-END: linear park, separated from traffic. Pedestrian-designed — should outscore a normal sidewalk. Does it?",
+    },
+    {
+        "name": "jamaica_pond_loop",
+        "area": "Jamaica Pond (pond loop path)",
+        "origin": (42.3175, -71.1205), "dest": (42.3210, -71.1160),
+        "look_for": "TOP-END: the most road-SEPARATED route in the set (sep 0.65). Genuinely car-free. This is the acid test — should be the highest-scoring route. Is it?",
+    },
+    {
+        "name": "commonwealth_mall_full",
+        "area": "Commonwealth Ave Mall (full length)",
+        "origin": (42.3520, -71.0760), "dest": (42.3475, -71.0890),
+        "look_for": "TOP-END: the central pedestrian mall (not the sidewalks). Tree-lined, car-free spine. Where should a pedestrian mall land?",
+    },
+    {
+        "name": "morrissey_blvd_dorchester",
+        "area": "Morrissey Blvd (Dorchester parkway)",
+        "origin": (42.3170, -71.0530), "dest": (42.3110, -71.0500),
+        "look_for": "BOTTOM-END: fast multi-lane parkway, car-dominated, sparse. Should be LOW (~60s). Is it low enough, or still propped up by surface/path?",
+    },
+    {
+        "name": "vfw_parkway_wroxbury",
+        "area": "VFW Parkway (West Roxbury)",
+        "origin": (42.2870, -71.1560), "dest": (42.2810, -71.1610),
+        "look_for": "BOTTOM-END: suburban high-speed parkway, narrow sidewalk beside fast traffic. Hostile — should score low.",
+    },
+    {
+        "name": "jamaicaway_parkway",
+        "area": "Jamaicaway (Olmsted parkway)",
+        "origin": (42.3225, -71.1135), "dest": (42.3140, -71.1075),
+        "look_for": "BOTTOM-END: a leafy-but-fast parkway — park-adjacent yet car-hostile. Tests whether greenery/openness wrongly props up a dangerous road.",
+    },
+    {
+        "name": "downtown_to_fenway",
+        "area": "Downtown → Fenway (long cross-city)",
+        "origin": (42.3585, -71.0575), "dest": (42.3440, -71.0960),
+        "look_for": "LONG/COMPLEX (~4 km): crosses many environments. Does the overall score sensibly average a mixed route? Any obvious bad detours?",
+    },
+    {
+        "name": "dorchester_to_downtown",
+        "area": "Dorchester → Downtown (very long)",
+        "origin": (42.3130, -71.0570), "dest": (42.3560, -71.0570),
+        "look_for": "LONG/COMPLEX (~6.7 km, 40+ crossings): the longest route. Stress-tests crossings + aggregation over a big mixed corridor.",
+    },
+    {
+        "name": "nubian_to_longwood",
+        "area": "Nubian → Longwood (cross-neighbourhood)",
+        "origin": (42.3290, -71.0830), "dest": (42.3380, -71.1040),
+        "look_for": "LONG/COMPLEX (~2.5 km): Roxbury → medical area, varied. Check the route choice and whether the mixed score feels right.",
     },
 ]
 
@@ -208,16 +335,14 @@ def _route_segments(G, route) -> list[dict]:
 
 
 def _route_category_means(G, route) -> dict[str, float]:
-    acc = {c: 0.0 for c in CATS}
-    wsum = {c: 0.0 for c in CATS}
-    for u, v, key in route.edges:
-        d = G[u][v][key]
-        L = _as_float(d.get("length")) or 0.0
-        for c, val in edge_category_scores(d).items():
-            if c in acc:
-                acc[c] += val * L
-                wsum[c] += L
-    return {c: (acc[c] / wsum[c]) for c in CATS if wsum[c] > 0}
+    """The route-level per-dimension values the walk_score is actually built from.
+
+    Reuses ``route.dimension_scores`` (router.py::_build_route) — the floored
+    per-dimension power means that ``combine_categories`` turns into walk_score —
+    so the displayed bars match the score exactly rather than a separate plain
+    arithmetic mean.
+    """
+    return {c: route.dimension_scores[c] for c in CATS if c in route.dimension_scores}
 
 
 def _alpha_moves(G, origin, dest) -> bool:
