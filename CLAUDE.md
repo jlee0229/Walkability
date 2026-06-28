@@ -25,6 +25,12 @@ python -m walkability.graph.build
 # Force a full rebuild after changing enrichment logic
 python -m walkability.graph.build --force
 
+# Convert the enriched GraphML(s) → slim runtime pickles the app loads
+# (≈0.5 s / ≈0.45 GB vs ≈17 s / ≈2.7 GB; a post-process, no --force rebuild).
+python -m walkability.graph.compact            # full graph
+python -m walkability.graph.compact --all      # full + every dev region
+python -m walkability.graph.compact --dev      # beacon_hill dev subset
+
 # Build a dev subset (default: ~500 m around Beacon Hill). Other named regions
 # exist for less-walkable test beds — see DEV_REGIONS in build.py.
 python -m walkability.graph.build --dev                            # beacon_hill
@@ -199,13 +205,17 @@ in-IDE preview sandbox can't read `venv/`, so launch from a normal shell). Key
 behaviours, several of them hard-won — **don't regress**:
 
 - **Graph load once + download-on-startup** (`@st.cache_resource`, keyed by path).
-  The graph files are too big for the repo (enriched ≈122 MB), so `get_graph` fetches
-  any missing file from a **GitHub Release** (`_GRAPH_RELEASE`, tag `data-v1`) via
-  streaming `requests` to a `.part` temp then atomic rename — this is what makes a
-  deployed instance (Streamlit Cloud) work without the data in git. Locally the files
-  already exist so nothing downloads. The region selector (`key="region_select"`)
-  sits at the bottom of the rail; its value is read at the **top** of the next run via
-  the widget key so the graph can load before the widget renders (default `full`).
+  The graph files are too big for the repo, so `get_graph` fetches any missing file
+  from a **GitHub Release** (`_GRAPH_RELEASE`, tag `data-v1`) via streaming `requests`
+  to a `.part` temp then atomic rename — this is what makes a deployed instance work
+  without the data in git. `get_graph` **prefers the slim `*.runtime.pkl`** sibling
+  (≈0.5 s, ≈0.45 GB; see the Phase-1 note under "What's not yet implemented"),
+  downloading the 40 MB pickle from the release rather than the 178 MB GraphML, and
+  only falls back to `load_graph(...graphml)` if the pickle is absent both locally
+  and in the release. Locally the files already exist so nothing downloads. The
+  region selector (`key="region_select"`) sits at the bottom of the rail; its value
+  is read at the **top** of the next run via the widget key so the graph can load
+  before the widget renders (default `full`).
 - **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
   fought st_folium reruns and added clutter). Origin/destination are addresses,
   geocoded by `geocode()` → **Nominatim scoped to a Boston bounding box**
@@ -253,24 +263,34 @@ behaviours, several of them hard-won — **don't regress**:
 
 ### What's not yet implemented
 
-- **Reduce graph RAM footprint (deployment TODO).** The full enriched graph
-  loads to **~2.2 GB resident** in NetworkX (52k nodes / 150k edges; the 122 MB
-  GraphML balloons due to Python per-object overhead + ~80k shapely geometry
-  objects). This exceeds **Streamlit Community Cloud's 1 GB cap**, so the deployed
-  app there can load the graph (sequential allocation tolerates swap) but *routing*
-  thrashes on swap (random-access traversal) → multi-minute hangs. Locally (16 GB)
-  and on **Hugging Face Spaces free CPU-basic (16 GB)** it fits fine; the latter is
-  the chosen home for the full-Boston deploy. Routing adds ~0 MB at query time — the
-  cost is entirely the resident graph. Options to shrink it, **none done yet**:
-  (a) drop `geometry` + unused OSM attrs (`osmid`, `edge_class`, `sidewalk_*` raw
-  fields, `oneway`/`reversed`, `service`/`maxspeed`/`lanes`/`width`/etc.) — measured
-  **2.2 GB → 1.47 GB**, still over 1 GB, and loses curved map lines (UI falls back to
-  straight node-to-node segments); (b) also drop the per-factor score fields and rely
-  on baked `walk_score`/`walk_confidence` (sacrifices slider fine-tune fidelity);
-  (c) abandon the osmnx/GraphML in-memory representation for a compact arrays/pickle
-  structure (largest effort, only path likely to clear 1 GB). Needs a `--force`
-  rebuild + a new release asset + a matching loader. Pursue only if returning to a
-  1 GB host.
+- **Graph RAM footprint — Phase 1 DONE (slim runtime pickle).** The enriched
+  GraphML loaded to **~2.7 GB peak / ~2.2 GB resident** in **~17 s** (52k nodes /
+  150k edges; the 178 MB GraphML balloons from Python per-object overhead, ~32
+  string attrs/edge, and ~81k shapely geometry objects) — over **Streamlit
+  Community Cloud's 1 GB cap**, where *routing* thrashed on swap → multi-minute
+  hangs. `walkability/graph/compact.py` now converts the enriched GraphML into a
+  **slim runtime `MultiDiGraph`** holding only the query-time keep-set (node `y`/`x`
+  + crossing `highway`; per-edge `length`, `foot_access`, `highway`, `name`, the
+  factor scores/confidences `edge_walkability` reads, baked `walk_score`/
+  `walk_confidence`, and `geometry` packed to a `float32` (n,2) array instead of
+  shapely), with scores pre-coerced to native `float`. Pickled, not GraphML.
+  Measured **17 s → 0.5 s load, 2.74 GB → 0.45 GB peak RSS, 178 MB → 40 MB on
+  disk**, with **verified route-for-route parity** (default + slider weights,
+  α=0/2/5, short/mid/long) and packed-geometry fidelity (~0.4 m float32 error).
+  This clears the 1 GB ceiling by a wide margin. It is still a plain
+  `MultiDiGraph`, so **routing/clip/router are unchanged**; only the app's
+  `_edge_coords` learns the packed-ndarray geometry type. Build with
+  `python -m walkability.graph.compact [--all|--dev|--region <r>]` (a post-process
+  on the enriched GraphML — **no `--force` rebuild**); the app's `get_graph` loads
+  the `*.runtime.pkl` sibling, downloading it from the release in preference to the
+  GraphML (which remains the fallback). **Deploy step still owed:** upload the
+  `*.runtime.pkl` assets to the `data-v1` GitHub Release (until then deploy falls
+  back to the heavy GraphML).
+- **Graph RAM — Phase 2 (open): compact CSR arrays.** For sub-100 MB / instant
+  load, replace the per-query NetworkX substrate with numpy CSR (`indptr` + flat
+  `float32` edge fields, code-mapped categoricals, packed geometry) — no Python
+  object per edge. Routing/clip would adapt to it; notebooks keep GraphML. Phase 1
+  already clears 1 GB, so this is now an optimisation, not a deploy blocker.
 - **More map areas (UI TODO).** The "Map area" selector is parked in an expander at
   the bottom of the rail and currently offers Full Boston + the `DEV_REGIONS` test
   beds. When real additional areas/cities are added, promote it to a first-class
