@@ -4,10 +4,9 @@ Humanpath — walkability-aware walking routes for Boston (Streamlit UI).
 Run with:
     streamlit run app/streamlit_app.py
 
-Enter an origin and destination by address, choose how far you'll go for a
-better walk (the `alpha` slider), and optionally fine-tune the per-factor
-weights. Routes are scored block by block and ranked; each route card can be
-expanded for the specifics (confidence, weakest stretch).
+Enter an origin and destination by address and choose how far you'll go for a
+better walk (the `alpha` slider). Routes are scored block by block and ranked;
+each route card can be expanded for the specifics (confidence, weakest stretch).
 
 Design: a warm editorial look (parchment + terracotta) with a left control rail
 and a full-height map. The graph loads once per session (`@st.cache_resource`).
@@ -26,6 +25,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import folium
+import numpy as np
 from streamlit_folium import st_folium
 
 from walkability.graph.build import (
@@ -34,6 +34,7 @@ from walkability.graph.build import (
     dev_region_path,
     load_graph,
 )
+from walkability.graph.compact import load_runtime, runtime_path
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
@@ -110,7 +111,7 @@ def inject_css() -> None:
         .stButton > button:hover { filter:brightness(1.05); color:#fff; }
         .stButton > button:focus { color:#fff; }
 
-        /* Expander as a quiet "fine-tune" panel */
+        /* Expander panels (route Details, Map area) — quiet, recessed */
         [data-testid="stExpander"] { border:1px solid #e6dfce; border-radius:13px; background:#fffdf8; }
         [data-testid="stExpander"] summary { font-weight:600; font-size:13.5px; color:var(--muted); }
 
@@ -151,21 +152,48 @@ def inject_css() -> None:
 _GRAPH_RELEASE = "https://github.com/jlee0229/Walkability/releases/download/data-v1"
 
 
-@st.cache_resource(show_spinner="Loading the walk graph (one-time, ~10s)…")
+def _download_release_asset(p: Path) -> bool:
+    """Stream a release asset into ``p`` (atomic). True on success, False on 404."""
+    import requests
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with requests.get(f"{_GRAPH_RELEASE}/{p.name}", stream=True, timeout=120) as r:
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        tmp = p.with_suffix(p.suffix + ".part")
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
+        tmp.replace(p)  # atomic: only a complete download becomes the real file
+    return True
+
+
+@st.cache_resource(show_spinner="Loading the walk graph (one-time)…")
 def get_graph(path_str: str):
-    p = Path(path_str)
-    if not p.exists():  # not present locally (e.g. on a fresh deploy) → download once
-        import requests
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with st.spinner(f"Downloading map data ({p.name}) — first run only…"):
-            with requests.get(f"{_GRAPH_RELEASE}/{p.name}", stream=True, timeout=120) as r:
-                r.raise_for_status()
-                tmp = p.with_suffix(p.suffix + ".part")
-                with open(tmp, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1 << 20):
-                        f.write(chunk)
-                tmp.replace(p)  # atomic: only a complete download becomes the real file
-    return load_graph(p)
+    """Load the slim runtime pickle (≈0.5 s, ≈0.45 GB) for an enriched GraphML path.
+
+    Prefers the ``.runtime.pkl`` sibling everywhere: locally it already exists,
+    and on a fresh deploy it is downloaded from the GitHub Release (40 MB vs the
+    178 MB GraphML). Falls back to the full GraphML only if the pickle is absent
+    both locally and in the release (e.g. an old release without the asset).
+    """
+    graphml = Path(path_str)
+    rt = runtime_path(graphml)
+
+    if rt.exists():
+        return load_runtime(rt)
+
+    # Not local → fetch the runtime pickle from the release (preferred, small).
+    with st.spinner(f"Downloading map data ({rt.name}) — first run only…"):
+        if _download_release_asset(rt):
+            return load_runtime(rt)
+
+    # Last resort: the heavyweight GraphML (older release without the pickle).
+    if not graphml.exists():
+        with st.spinner(f"Downloading map data ({graphml.name}) — first run only…"):
+            _download_release_asset(graphml)
+    return load_graph(graphml)
 
 
 def _graph_center(G):
@@ -181,7 +209,12 @@ def _graph_center(G):
 def _edge_coords(G, u, v, key):
     geom = G[u][v][key].get("geometry")
     if geom is not None:
-        return [(lat, lon) for lon, lat in geom.coords]
+        # Runtime pickle packs geometry as a float32 (n, 2) ndarray (lon, lat);
+        # the enriched GraphML carries a shapely LineString. Both iterate as
+        # (lon, lat) pairs, flipped here to folium's (lat, lon).
+        # float(...) so packed float32 becomes plain float (folium/JSON-safe).
+        coords = geom if isinstance(geom, np.ndarray) else geom.coords
+        return [(float(lat), float(lon)) for lon, lat in coords]
     return [(G.nodes[u]["y"], G.nodes[u]["x"]), (G.nodes[v]["y"], G.nodes[v]["x"])]
 
 
@@ -256,12 +289,6 @@ def time_str(m: float) -> str:
 def alpha_word(slider: int) -> str:
     return ("Shortest path" if slider < 15 else "Lean shorter" if slider < 35
             else "Balanced" if slider < 58 else "Lean walkable" if slider < 82 else "Best walk")
-
-
-_FACTOR_LABELS = {
-    "road_type": "street type", "surface_quality": "surface condition",
-    "surface_material": "surface material", "foot_access": "foot access",
-}
 
 
 def route_details(G, route, weights):
@@ -360,17 +387,14 @@ with st.sidebar:
         unit = st.segmented_control("Distance units", ["mi", "km"], default="mi",
                                     label_visibility="collapsed", key="units") or "mi"
 
-    with st.expander("Fine-tune what matters"):
-        w_road = st.slider("Street type", 0.0, 10.0, FACTOR_WEIGHTS["road_type"], 0.5)
-        w_surf = st.slider("Surface condition", 0.0, 10.0, FACTOR_WEIGHTS["surface_quality"], 0.5)
-        w_mat = st.slider("Surface material", 0.0, 10.0, FACTOR_WEIGHTS["surface_material"], 0.5)
-        w_foot = st.slider("Foot access", 0.0, 10.0, FACTOR_WEIGHTS["foot_access"], 0.5)
+    # Per-factor weight sliders were removed: the score is now a two-level
+    # HDI-style category aggregate (scoring/factors.py), so flat per-factor
+    # weights no longer map cleanly onto what the user sees. The default
+    # FACTOR_WEIGHTS object is always used, which also keeps the baked
+    # walk_score fast path.
+    weights = FACTOR_WEIGHTS
 
-    _custom = {"road_type": w_road, "surface_quality": w_surf,
-               "surface_material": w_mat, "foot_access": w_foot}
-    weights = FACTOR_WEIGHTS if _custom == FACTOR_WEIGHTS else _custom
-
-    params = {"o": o_addr.strip(), "d": d_addr.strip(), "alpha": alpha, "w": dict(_custom)}
+    params = {"o": o_addr.strip(), "d": d_addr.strip(), "alpha": alpha}
     pending = st.session_state.committed is not None and params != st.session_state.committed
     # Render the nudge into a placeholder *above* the button, but fill it only after
     # we know whether the button was clicked — so it vanishes the moment Update is hit.
@@ -381,7 +405,7 @@ with st.sidebar:
             '<div style="display:flex;align-items:center;gap:9px;margin:6px 0 10px;padding:10px 13px;'
             'border-radius:11px;background:#f7e9e0;border:1px solid #e7c9b6;">'
             '<div style="width:6px;height:6px;border-radius:50%;background:#b1592e;"></div>'
-            '<span style="font-size:12.5px;color:#5c564a;">Priorities changed — update to recompute.</span></div>',
+            '<span style="font-size:12.5px;color:#5c564a;">Settings changed — update to recompute.</span></div>',
             unsafe_allow_html=True,
         )
 
