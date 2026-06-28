@@ -1,0 +1,31 @@
+route_name,area,ideal_score,confidence,tier,notes,model_score,model_safety,model_comfort,model_path,model_len_m
+beacon_hill_charles_to_louisburg,Beacon Hill (Charles St → Louisburg Sq),84,sure,good,,86,0.84,0.83,0.90,237
+back_bay_comm_ave_mall,Back Bay (Commonwealth Ave Mall),89,sure,buffered,,91,0.91,0.91,0.90,774
+north_end_hanover,North End (Hanover St),86,sure,buffered,parked cars,87,0.86,0.87,0.90,425
+south_end_tremont_shops,South End (Tremont St),87,sure,buffered,bike path on Tremont,86,0.85,0.80,0.90,627
+newmarket_mass_ave_industrial,Newmarket / Mass Ave (industrial),65,sure,poor,Path seems high,66,0.49,0.83,0.86,1628
+nubian_roxbury_washington,Nubian Sq / Roxbury (Washington St),73,sure,mixed,,73,0.75,0.86,0.63,590
+charlestown_sullivan_sq,Charlestown / Sullivan Sq,65,rough,poor,Could not fully verify route because parts are inaccessible on google maps,66,0.68,0.80,0.57,883
+seaport_congress,Seaport (Congress St),80,rough,good,Wide road but relatively buffered by parked cars and wide sidewalk,70,0.54,0.85,0.90,516
+downtown_crossing_financial,Downtown Crossing → Financial District,84,sure,good,,87,0.85,0.87,0.90,621
+jp_centre_st,Jamaica Plain (Centre St),81,sure,good,Feels significantly more exposed compared to buffered streets,84,0.82,0.80,0.88,791
+allston_harvard_ave,Allston (Harvard Ave commercial),83,rough,good,Sidewalks are narrow but also buffered slightly by parked cars,87,0.83,0.92,0.90,494
+fenway_kenmore_brookline_ave,Fenway / Kenmore (Brookline Ave),83,sure,good,,84,0.82,0.92,0.83,586
+dorchester_fields_corner,Dorchester (Dot Ave / Fields Corner),60,rough,poor,,55,0.79,0.83,0.26,441
+roslindale_square,Roslindale (Roslindale Village),80,sure,good,,83,0.82,0.87,0.82,424
+charlestown_main_thompson_sq,Charlestown (Main St / Thompson Sq),85,sure,good,,88,0.85,0.90,0.90,401
+west_roxbury_centre_st,West Roxbury (Centre St),83,rough,good,,80,0.81,0.83,0.77,956
+mission_hill_tremont,Mission Hill (Tremont St),81,rough,good,Sidewalk on terrace is outdated,86,0.81,0.93,0.90,340
+longwood_medical_area,Longwood Medical Area (Longwood Ave),85,sure,good,,85,0.80,0.90,0.90,547
+chinatown_beach_essex,Chinatown (Beach St / Essex St),83,rough,mixed,"REVISED 78->83 after tunnel fix: new route feels better than the old one. Slight claustrophobic feeling (old streets, tall buildings) + general area feeling pull it below a normal good street, but neither is capturable by geometry. Model 87 is a mild overshoot.",87,0.82,0.94,0.90,373
+south_boston_broadway,South Boston (West Broadway),83,sure,good,Still side issues,85,0.83,0.82,0.90,523
+esplanade_charles_river,Charles River Esplanade (riverside path),86,rough,buffered,Feels similar but worse than back_bay. Forced to use beacon street because no viable way from car-free riverside route to destination.,89,0.89,0.87,0.90,2545
+sw_corridor_park,Southwest Corridor Park (linear park),85,rough,good,"First half feels great (>90), but second half after leaving campus feels not great, comes out to around 85 as a rough estimate.",87,0.86,0.91,0.85,2440
+jamaica_pond_loop,Jamaica Pond (pond loop path),93,sure,car_free,"Starts fully car_free, but does have an intersection at the end. Score suffers from low surface rating on paths without clearly defined surfaces",91,0.95,0.87,0.90,524
+commonwealth_mall_full,Commonwealth Ave Mall (full length),85,sure,good,"Extension of route 2 (takes street), but the ending portion is noticeably worse",90,0.89,0.91,0.90,1298
+morrissey_blvd_dorchester,Morrissey Blvd (Dorchester parkway),65,rough,poor,"Bridge was under construction when street view was taken. Rest of route looks fine, but bridge does feel quite exposed.",66,0.69,0.81,0.55,1215
+vfw_parkway_wroxbury,VFW Parkway (West Roxbury),81,rough,good,Doesn't feel hostile at least from street view,78,0.74,0.84,0.80,880
+jamaicaway_parkway,Jamaicaway (Olmsted parkway),83,sure,good,Also feels fine,86,0.85,0.84,0.89,1589
+downtown_to_fenway,Downtown → Fenway (long cross-city),84,rough,good,"Everything is great except for seg #20, which is a forced overpass of the Massachusetts turnpike",85,0.82,0.87,0.88,4406
+dorchester_to_downtown,Dorchester → Downtown (very long),79,sure,mixed,"Major crossings are problematic, but the rest look okay.",75,0.74,0.87,0.69,5951
+nubian_to_longwood,Nubian → Longwood (cross-neighbourhood),81,rough,good,"First part is bad, but after crossing Columbus avenue everything looks good",85,0.79,0.92,0.90,2543

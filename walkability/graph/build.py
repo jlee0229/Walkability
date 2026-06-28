@@ -137,6 +137,24 @@ OSM_MAJOR_ROAD_THRESHOLD = 0.20
 CITY_QUALITY_HIGH        = 0.80
 CONSISTENCY_PENALTY      = 0.75
 
+# Both-sides aggregation (replaces the single-nearest "coin flip"): a street's
+# two sidewalks both fall within SPATIAL_JOIN_CUTOFF_M of the centerline, so we
+# average all matched candidates. When they genuinely disagree the single edge
+# value is less trustworthy, so we down-weight its confidence (a routing/re-rank
+# tiebreaker — never a hard cost term).
+DIVERGENCE_THRESHOLD_SCI = 15.0   # SCI points (0–100 scale); sides differ by more → divergent
+DIVERGENCE_PENALTY       = 0.85   # multiply surface_confidence on divergent edges
+
+# Lever 3 (re-anchor): a pedestrian-DEDICATED recreational path (greenway / park
+# path / promenade) with no city inventory data shouldn't be docked to the generic
+# OSM-footway surface fallback (0.75) just for lacking a paved-surface tag — an
+# unpaved park path is comfortable by design, not degraded (the jamaica_pond /
+# Seaport HarborWalk case, both surface-fallback edges the user flagged). Where such
+# an edge is also clearly recreational (open or road-separated), treat its unknown
+# surface as a pleasant path rather than a middling default.
+PED_PATH_COMFORT          = 0.90   # surface + material comfort for the above
+PED_PATH_RECREATIONAL_MIN = 0.30   # min openness OR road_separation to qualify
+
 
 # ---------------------------------------------------------------------------
 # Inspection utility
@@ -481,6 +499,126 @@ def _city_surface_confidence(
     return round(date_conf * consistency, 4)
 
 
+def _aggregate_city_candidates(rows: gpd.GeoDataFrame) -> dict | None:
+    """Aggregate every sidewalk-inventory polygon matched to one OSM edge.
+
+    Replaces the earlier single-nearest "coin flip": a street's two sidewalks
+    both fall within SPATIAL_JOIN_CUTOFF_M of the centerline, and keeping
+    whichever centroid happened to be closer was arbitrary (and silently dropped
+    the other side). Here we take an area-weighted mean over the *valid*
+    candidates (SCI in 0–100, width > 0; phantom never-surveyed polygons removed)
+    and flag divergence — candidates whose SCI differs by more than
+    DIVERGENCE_THRESHOLD_SCI, or whose material disagrees — so the caller can
+    down-weight confidence where our single edge value is least trustworthy.
+
+    Returns a dict using the same field names the canonical schema reads (so the
+    downstream consumer is unchanged), plus ``_sci_divergent`` / ``_n_valid`` /
+    ``_sci_spread`` for the confidence penalty and build diagnostics. Returns
+    ``None`` when nothing usable matched (→ edge falls through to the OSM tier).
+    """
+    contrib = []  # tuples: (row, year|None, raw_date, inspected, sci01, area)
+    for _, r in rows.iterrows():
+        raw_date = r.get(SWK_DATE_FIELD)
+        try:
+            yr = pd.to_datetime(raw_date).year
+        except Exception:
+            yr = None
+        insp = r.get("inspected")
+        insp_null = insp is None or (isinstance(insp, float) and pd.isna(insp))
+        if yr is not None and yr < 2000 and insp_null:
+            continue  # phantom polygon: exists but was never field-surveyed
+        sci01 = _condition_to_score(r.get(SWK_CONDITION_FIELD))
+        if sci01 is None:
+            continue  # no valid SCI measurement — don't pollute the mean
+        try:
+            area = float(r.get("SWK_AREA"))
+        except (TypeError, ValueError):
+            area = 0.0
+        if not (area > 0):
+            area = 1.0
+        contrib.append((r, yr, raw_date, insp, sci01, area))
+
+    if not contrib:
+        return None  # nothing usable → fall through to the OSM-tag tier
+
+    wsum = sum(c[5] for c in contrib)
+    sci_mean01 = sum(c[4] * c[5] for c in contrib) / wsum
+
+    # Area-weighted mean width over candidates that report a positive width.
+    wnum = wden = 0.0
+    for c in contrib:
+        try:
+            wid = float(c[0].get(SWK_WIDTH_FIELD))
+        except (TypeError, ValueError):
+            wid = None
+        if wid is not None and wid > 0:
+            wnum += wid * c[5]
+            wden += c[5]
+    width_mean = round(wnum / wden, 2) if wden > 0 else None
+
+    # Material: conservative — the lowest-comfort recognised code (don't average
+    # categorical comfort upward).
+    mats = []
+    for c in contrib:
+        code = c[0].get(SWK_SURFACE_FIELD)
+        score = _surface_label_to_score(code)
+        if score is not None:
+            mats.append((score, str(code).strip().upper()))
+    material_code = min(mats, key=lambda x: x[0])[1] if mats else None
+
+    # Divergence: compare ONE representative per inventory SIDE (the largest-area
+    # polygon on each side — the real flanking sidewalk), not a raw max−min over
+    # every matched fragment. A tiny corner fragment from a perpendicular street
+    # is within the buffer too, so raw spread wildly over-flags; the per-side
+    # largest-area pick is robust to that contamination while still catching a
+    # genuine left-vs-right disagreement.
+    by_side: dict[str, tuple] = {}
+    for c in contrib:
+        side = str(c[0].get("SIDE")).upper()
+        if side not in by_side or c[5] > by_side[side][5]:
+            by_side[side] = c
+    side_reps = sorted(by_side.values(), key=lambda c: c[5], reverse=True)[:2]
+    if len(side_reps) >= 2:
+        a, b = side_reps[0], side_reps[1]
+        sci_spread = abs(a[4] - b[4]) * 100.0  # in SCI points
+        ma = _surface_label_to_score(a[0].get(SWK_SURFACE_FIELD))
+        mb = _surface_label_to_score(b[0].get(SWK_SURFACE_FIELD))
+        material_divergent = (
+            ma is not None and mb is not None
+            and str(a[0].get(SWK_SURFACE_FIELD)).strip().upper()
+            != str(b[0].get(SWK_SURFACE_FIELD)).strip().upper()
+        )
+    else:
+        sci_spread = 0.0
+        material_divergent = False
+
+    # Freshest contributing date + inspected flag — these drive _date_confidence
+    # and the 1970-placeholder branch in _build_canonical_schema. Because phantom
+    # rows are already excluded, any surviving pre-2000 row was inspected=yes, so
+    # the placeholder branch will not wrongly drop the aggregate.
+    def _dt(c):
+        try:
+            return pd.to_datetime(c[2])
+        except Exception:
+            return pd.Timestamp.min
+
+    agg_date = max(contrib, key=_dt)[2]
+    inspected_val = "yes" if any(str(c[3]).lower() == "yes" for c in contrib) else None
+
+    divergent = (sci_spread > DIVERGENCE_THRESHOLD_SCI) or material_divergent
+
+    return {
+        SWK_CONDITION_FIELD: round(sci_mean01 * 100.0, 1),
+        SWK_SURFACE_FIELD:   material_code,
+        SWK_WIDTH_FIELD:     width_mean,
+        SWK_DATE_FIELD:      agg_date,
+        "inspected":         inspected_val,
+        "_sci_divergent":    divergent,
+        "_n_valid":          len(contrib),
+        "_sci_spread":       round(sci_spread, 1),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Spatial join (bulk, pre-computed before the edge loop)
 # ---------------------------------------------------------------------------
@@ -488,11 +626,13 @@ def _city_surface_confidence(
 def _build_spatial_index(
     G: nx.MultiDiGraph,
     sidewalks: gpd.GeoDataFrame,
-) -> dict[tuple, pd.Series]:
-    """Bulk spatial join: map each OSM edge to its best matching sidewalk row.
+) -> dict[tuple, dict]:
+    """Bulk spatial join: map each OSM edge to an aggregate of its matched sidewalks.
 
-    Returns a dict keyed by (u, v, key) → sidewalk GeoDataFrame row.
-    Edges with no match within SPATIAL_JOIN_CUTOFF_M are absent from the dict.
+    Returns a dict keyed by (u, v, key) → an aggregated record (see
+    _aggregate_city_candidates) carrying mean SCI / conservative material / mean
+    width plus a divergence flag. Edges with no usable match within
+    SPATIAL_JOIN_CUTOFF_M are absent from the dict.
 
     Steps:
       1. Build edge GeoDataFrame from OSM graph (uses stored edge geometry
@@ -500,7 +640,8 @@ def _build_spatial_index(
       2. Reproject both datasets to metric CRS
       3. Buffer OSM edges by SPATIAL_JOIN_CUTOFF_M to create match zones
       4. Spatial join against sidewalk features
-      5. For edges with multiple candidate matches, keep nearest centroid
+      5. Aggregate ALL candidate matches per edge (both sidewalks of a street),
+         not just the nearest, flagging divergence for confidence down-weighting
     """
     print("Building edge GeoDataFrame from OSM graph ...")
     nodes_gdf, edges_gdf = ox.graph_to_gdfs(G)
@@ -531,36 +672,32 @@ def _build_spatial_index(
         warnings.warn("Spatial join returned no matches. Check CRS and file paths.")
         return {}
 
-    # For edges with multiple candidates: keep the one whose centroid is
-    # closest to the edge (proxy for best geometric match)
-    edges_centroids = edges_metric.copy()
-    edges_centroids["geometry"] = edges_metric.geometry.centroid
-    centroid_lookup = edges_centroids.set_index("_edge_id")["geometry"].to_dict()
-
-    swk_centroids = swk_metric.copy()
-    swk_centroids["geometry"] = swk_metric.geometry.centroid
-
-    best_matches: dict[tuple, pd.Series] = {}
+    # Aggregate ALL candidates per edge (both sidewalks of a street fall within
+    # the buffer) rather than keeping a single arbitrary nearest match — see
+    # _aggregate_city_candidates.
+    best_matches: dict[tuple, dict] = {}
     for edge_id, group in joined.groupby("_edge_id"):
-        edge_centroid = centroid_lookup.get(edge_id)
-        if edge_centroid is None:
-            continue
-        # Retrieve full sidewalk rows for this group
         swk_rows = swk_metric.loc[swk_metric["_swk_idx"].isin(group["_swk_idx"].values)]
         if swk_rows.empty:
             continue
-        # Nearest centroid wins
-        swk_rows = swk_rows.copy()
-        swk_rows["_dist"] = swk_rows.geometry.centroid.distance(edge_centroid)
-        best = swk_rows.loc[swk_rows["_dist"].idxmin()]
-        edge_id = cast(tuple, edge_id)
-        best = cast(pd.Series, swk_rows.loc[swk_rows["_dist"].idxmin()])
-        best_matches[edge_id] = best
+        agg = _aggregate_city_candidates(swk_rows)
+        if agg is None:
+            continue
+        best_matches[cast(tuple, edge_id)] = agg
 
     n_matched = len(best_matches)
     n_total   = len(edges_gdf)
-    print(f"  Matched {n_matched}/{n_total} edges ({100*n_matched//n_total}%) "
+    n_multi   = sum(1 for a in best_matches.values() if a["_n_valid"] >= 2)
+    n_div     = sum(1 for a in best_matches.values() if a["_sci_divergent"])
+    spreads   = sorted(a["_sci_spread"] for a in best_matches.values() if a["_n_valid"] >= 2)
+    print(f"  Matched {n_matched}/{n_total} edges ({100*n_matched//max(n_total,1)}%) "
           f"to sidewalk inventory features")
+    if spreads:
+        p50 = spreads[len(spreads) // 2]
+        p90 = spreads[min(len(spreads) - 1, int(len(spreads) * 0.9))]
+        print(f"  Both-sides aggregate: {n_multi} multi-candidate edges "
+              f"({100*n_multi//max(n_matched,1)}%), {n_div} divergent "
+              f"({100*n_div//max(n_matched,1)}%); SCI spread median={p50:.0f} p90={p90:.0f}")
     return best_matches
 
 
@@ -571,7 +708,7 @@ def _build_spatial_index(
 def _build_canonical_schema(
     raw_data:   dict,
     fallback:   Any,           # FallbackResult
-    city_row:   pd.Series | None,
+    city_row:   dict | None,   # aggregated record from _aggregate_city_candidates
     env:        dict | None = None,
 ) -> dict:
     """Produce the canonical attribute dict for one edge.
@@ -617,6 +754,11 @@ def _build_canonical_schema(
         city_quality = _condition_to_score(raw_cond)
         city_conf    = _city_surface_confidence(raw_date, highway_score, city_quality)
 
+        # Down-weight confidence where the two sides genuinely disagree (the
+        # aggregate is then a less trustworthy single value for the edge).
+        if city_row.get("_sci_divergent"):
+            city_conf = round(city_conf * DIVERGENCE_PENALTY, 4)
+
         if city_quality is not None:
             surface_score      = city_quality   # SCI/100 — structural condition
             surface_confidence = city_conf
@@ -634,6 +776,13 @@ def _build_canonical_schema(
         except (ValueError, TypeError):
             sidewalk_width_ft = None
         sidewalk_survey_date = str(pd.to_datetime(raw_date).date()) if raw_date is not None else None
+
+    # --- Lever 3: unpaved recreational-path comfort lift (no city data) ---
+    if (data_source != "city_inventory" and fallback.is_pedestrian_dedicated and env
+            and max(env.get("openness_score") or 0.0,
+                    env.get("road_separation") or 0.0) >= PED_PATH_RECREATIONAL_MIN):
+        surface_score          = max(surface_score or 0.0, PED_PATH_COMFORT)
+        surface_material_score = max(surface_material_score or 0.0, PED_PATH_COMFORT)
 
     schema = {
         # Scores and confidence
@@ -655,6 +804,11 @@ def _build_canonical_schema(
         "arterial_proximity_score": (env or {}).get("arterial_proximity_score"),
         "eyes_score":               (env or {}).get("eyes_score"),
         "environment_confidence":   (env or {}).get("environment_confidence"),
+        # Sub-signals for diagnostics + offline lever isolation (env-rework §6).
+        "industrial_exposure":      (env or {}).get("industrial_exposure"),
+        "road_separation":          (env or {}).get("road_separation"),
+        "eyes_uncapped":            (env or {}).get("eyes_uncapped"),
+        "openness_score":           (env or {}).get("openness_score"),
 
         # Categorical
         "foot_access":            foot_access,

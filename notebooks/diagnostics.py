@@ -117,6 +117,55 @@ def breakdown_route(G, route, alpha: float = ALPHA_DEFAULT) -> None:
               f"  {d.get('data_source')}")
 
 
+def safety_breakdown(G, route, alpha: float = ALPHA_DEFAULT) -> None:
+    """Per-edge SAFETY sub-score breakdown (the D1 calibration inspector).
+
+    Columns: on = on-path car-safety (maxspeed of the road you walk along),
+    off = off-path arterial-proximity, car = min(on, off) graded by separation and
+    knocked down by industrial exposure, eyes = perceived safety, env = the
+    safety-dimension composite, ind = industrial_exposure (A), sep = road_separation
+    (B). Lets you see *which segment* and *which sub-signal* drives a route's safety,
+    so each calibration lever can be tuned one at a time. All fields are read from
+    the baked edge data (ind/sep are blank on graphs built before the env-rework).
+    """
+    if route is None:
+        print("  (no route)")
+        return
+
+    def wmean(field):
+        num = den = 0.0
+        for u, v, key in route.edges:
+            x = _as_float(G[u][v][key].get(field))
+            L = _as_float(G[u][v][key].get("length")) or 0.0
+            if x is not None:
+                num += x * L
+                den += L
+        return num / den if den else float("nan")
+
+    print(f"=== Safety breakdown (alpha={alpha}) ===")
+    print(f"  route means: on={wmean('maxspeed_safety_score'):.2f} "
+          f"off={wmean('arterial_proximity_score'):.2f} "
+          f"car={wmean('car_safety_score'):.2f} "
+          f"eyes={wmean('eyes_score'):.2f} env={wmean('environment_score'):.2f}\n")
+    hdr = (f"  {'street':<22}{'on':>5}{'off':>5}{'car':>5}{'eyes':>5}{'env':>5}"
+           f"{'ind':>5}{'sep':>5}{'len':>7}")
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    for u, v, key in route.edges:
+        d = G[u][v][key]
+
+        def f(x):
+            x = _as_float(d.get(x))
+            return f"{x:.2f}" if x is not None else "  -"
+
+        name = _as_str(d.get("name")) or _as_str(d.get("highway")) or "-"
+        print(f"  {name[:22]:<22}{f('maxspeed_safety_score'):>5}"
+              f"{f('arterial_proximity_score'):>5}{f('car_safety_score'):>5}"
+              f"{f('eyes_score'):>5}{f('environment_score'):>5}"
+              f"{f('industrial_exposure'):>5}{f('road_separation'):>5}"
+              f"{(_as_float(d.get('length')) or 0):>7.0f}")
+
+
 def compare_alphas(G, orig, dest, alphas=(0.0, 2.0, 5.0), **kwargs) -> dict:
     """Run several alphas and print a one-line summary of each best route.
 

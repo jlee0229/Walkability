@@ -42,7 +42,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 # --- (1) schema + scoring bounds -------------------------------------------
 
 def check_schema_and_bounds(G) -> None:
-    bad_field = bad_walk = bad_conf = 0
+    bad_field = bad_walk = bad_conf = bad_env = 0
     for *_, d in G.edges(keys=True, data=True):
         if _as_float(d.get("highway_score")) is None or d.get("length") is None:
             bad_field += 1
@@ -51,9 +51,15 @@ def check_schema_and_bounds(G) -> None:
             bad_walk += 1
         if not (0.0 <= c <= 1.0):
             bad_conf += 1
+        # env = sqrt(car·eyes); the graded car ceiling (env-rework B) must keep it
+        # in [0,1] (car can now exceed 0.85 on separated paths, but never 1.0).
+        env = _as_float(d.get("environment_score"))
+        if env is not None and not (0.0 <= env <= 1.0):
+            bad_env += 1
     check("every edge has highway_score + length", bad_field == 0, f"{bad_field} missing")
     check("walk_score in [0,1] for all edges", bad_walk == 0, f"{bad_walk} out of range")
     check("confidence in [0,1] for all edges", bad_conf == 0, f"{bad_conf} out of range")
+    check("environment_score in [0,1] for all edges", bad_env == 0, f"{bad_env} out of range")
 
 
 # --- (2) missing-factor renormalisation ------------------------------------
@@ -214,9 +220,20 @@ def check_clip_matches_full(Gfull) -> None:
     mism = 0
     n = 0
     for orig, dest in pairs:
-        clipped = find_routes(Gfull, orig, dest, alpha=2.0)
-        o = clip.snap_to_node(Gfull, *orig)
-        d = clip.snap_to_node(Gfull, *dest)
+        # Compare like-for-like: the cost-optimum found via find_routes (clip +
+        # auto-widen) vs the cost-optimum on the full graph, using the SAME snap
+        # nodes find_routes uses. We take min-by-total_cost on both sides rather
+        # than candidate[0], because for alpha>0 find_routes re-ranks by
+        # walk_score, so candidate[0] is the most walkable route, not the cheapest
+        # — comparing it to the full graph's min-cost route would test the re-rank,
+        # not the clip's optimum-preservation guarantee.
+        o = clip.snap_to_node(Gfull, *orig, routable_only=True,
+                              walk_bias=clip.SNAP_WALK_BIAS_M)
+        d = clip.snap_to_node(Gfull, *dest, routable_only=True,
+                              walk_bias=clip.SNAP_WALK_BIAS_M)
+        # refine_sides=False: this tests the CLIP's optimum-preservation, not the
+        # phase-2 length refinement (which intentionally changes the chosen path).
+        clipped = find_routes(Gfull, orig, dest, alpha=2.0, refine_sides=False)
         full = _collect_candidates(Gfull, o, d, 2.0, 5, 25, 0.40)
         if not clipped and not full:
             continue
@@ -225,7 +242,8 @@ def check_clip_matches_full(Gfull) -> None:
             mism += 1
             continue
         best_full = min(full, key=lambda r: r.total_cost).total_length
-        if abs(clipped[0].total_length - best_full) > 1.0:
+        best_clip = min(clipped, key=lambda r: r.total_cost).total_length
+        if abs(best_clip - best_full) > 1.0:
             mism += 1
     check("clipped route == unclipped optimum (auto-widen guarantee)", mism == 0,
           f"{mism}/{n} mismatched")

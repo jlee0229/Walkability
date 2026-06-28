@@ -206,6 +206,23 @@ def _category_values(
     return out
 
 
+def combine_categories(category_values: dict[str, float]) -> float:
+    """Level-2 aggregate: importance-weighted GEOMETRIC mean across categories.
+
+    The cross-category combine shared by the edge aggregate (``edge_walkability``)
+    and the route aggregate (``routing/router.py::_build_route``), so the two can
+    never drift. Each ``category_values`` entry is assumed already floored to
+    ``[CATEGORY_FLOOR, 1]``; absent categories simply don't contribute. Weights
+    come from ``CATEGORY_WEIGHTS`` (importance — Safety ≥ Path > Comfort). Non-
+    substitutable: one weak dimension dominates.
+    """
+    cat_wsum = sum(CATEGORY_WEIGHTS.get(c, 1.0) for c in category_values)
+    return math.exp(
+        sum(CATEGORY_WEIGHTS.get(c, 1.0) * math.log(v) for c, v in category_values.items())
+        / cat_wsum
+    )
+
+
 def edge_category_scores(
     edge: dict, weights: dict[str, float] = FACTOR_WEIGHTS
 ) -> dict[str, float]:
@@ -278,11 +295,7 @@ def edge_walkability(
 
     # Level 2: importance-WEIGHTED (CATEGORY_WEIGHTS) GEOMETRIC mean across the
     # present categories. Absent categories simply don't contribute.
-    cat_wsum = sum(CATEGORY_WEIGHTS.get(c, 1.0) for c in category_values)
-    walk = math.exp(
-        sum(CATEGORY_WEIGHTS.get(c, 1.0) * math.log(v) for c, v in category_values.items())
-        / cat_wsum
-    )
+    walk = combine_categories(category_values)
 
     # Confidence stays a plain weight-weighted arithmetic mean (tiebreaker only).
     total_weight = sum(w for _, _, w, _ in contributions)
