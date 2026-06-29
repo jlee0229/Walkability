@@ -243,12 +243,25 @@ behaviours, several of them hard-won — **don't regress**:
   lowest-scoring block), and a **"Show N segments"** toggle: it lists each block's
   score **and** switches the focused route on the map to per-block colouring
   (`seg_{focus}` flag, read by `build_map`).
-- **st_folium camera.** `returned_objects=[]` (the map needs no round-trip, so
-  pan/zoom never rerun). `build_map` centres on and `fit_bounds` to the **focused
-  route**; st_folium only re-renders (re-fits) when the figure actually changes —
-  a search, "Show on map", or a segment toggle — so editing sliders/addresses/units
-  leaves the view alone and the camera never snaps to the city default. (Earlier
-  `framed_token` gating is gone — fitting the focused route subsumes it.)
+- **st_folium camera — persistent base + dynamic layers (no remount).** The map
+  is split three ways so route loads feel natural instead of reloading the whole
+  iframe: (1) `build_base_map` renders the **tiles-only** map **once** with a
+  *constant* centre/zoom and a **stable `key="route_map"`** — st_folium hashes the
+  generated Leaflet JS (`generate_js_hash` strips folium's random `_<hash>` var
+  suffixes), so a stable JS → stable hash → the iframe is **never remounted** (no
+  white flash, no tile reload). (2) Routes + O/D markers are a **`FeatureGroup`**
+  passed via `feature_group_to_add`, which swaps just that layer on the live map.
+  (3) The camera is moved by passing **`center`/`zoom`** (from `camera_view` →
+  `_bounds_to_view`, the Web-Mercator `getBoundsZoom` fit). st_folium's frontend
+  `setView`s **only when center/zoom change vs the last pass** (it compares
+  `JSON.stringify(center)` and `zoom !== last_zoom`), so the camera eases to a
+  route on a **search or focus switch** but stays put on a **segment toggle, a
+  slider/address edit, or a manual pan**. `returned_objects=[]` keeps it one-way
+  (no round-trip rerun). **st_folium has no animated `flyTo`** (its bundle only
+  calls `setView`), so transitions are an instant/short-pan, not a Mapbox-style
+  arc — a true eased flyTo would need a custom Leaflet/MapLibre component (the
+  considered "Option B"). Region switch changes `_graph_center` → base JS changes
+  → hash changes → an intentional remount onto the new area.
 - **Wheel zoom.** Native Leaflet zoom with `zoom_snap=0` (fractional) +
   `wheel_px_per_zoom_level=40` (brisk). The **Leaflet.SmoothWheelZoom** plugin was
   tried for Google-Maps-style continuous zoom but **does not execute inside
