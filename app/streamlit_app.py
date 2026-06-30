@@ -15,6 +15,7 @@ and a full-height map. The graph loads once per session (`@st.cache_resource`).
 from __future__ import annotations
 
 import math
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -27,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import folium
 import numpy as np
+import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 
 from walkability.graph.build import (
@@ -47,6 +49,11 @@ st.set_page_config(page_title="Humanpath", page_icon=_ICON_PATH, layout="wide")
 ACCENT = "#b1592e"
 INK = "#211e18"
 WALK_SPEED_MPS = 1.33  # ~average pedestrian pace, for walk-time estimates
+
+# Map backend flag (B2 rollout): "folium" (default, the shipped st_folium raster
+# map) or "maplibre" (the in-progress GPU vector spike — set HUMANPATH_MAP=maplibre).
+# Keeps the working folium map as a fallback while MapLibre is de-risked/built.
+_MAP_BACKEND = os.environ.get("HUMANPATH_MAP", "folium").strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +716,60 @@ def camera_view(G, routes, focus):
     return _bounds_to_view(min(lats), min(lons), max(lats), max(lons))
 
 
+# ---------------------------------------------------------------------------
+# MapLibre GL component (B2) — used only when HUMANPATH_MAP=maplibre. A build-less
+# static Streamlit component (app/components/maplibre_map/frontend/) served from a
+# REAL origin via declare_component, so external tiles load and lines render —
+# unlike the earlier components.html `srcdoc` spike, whose null origin CORS-blocked
+# tiles and broke line rendering. Python passes a route GeoJSON + a camera target;
+# main.js keeps a PERSISTENT map and updates layers/camera per rerun (no remount).
+# Basemap: OpenFreeMap for now (HUMANPATH_STYLE to switch); production = self-hosted
+# Protomaps PMTiles (B2.1b). MapLibre is CDN-loaded for now; vendor for production.
+_MAPLIBRE_BASEMAP = {
+    "demotiles": "https://demotiles.maplibre.org/style.json",
+    "openfreemap": "https://tiles.openfreemap.org/styles/positron",
+}.get(os.environ.get("HUMANPATH_STYLE", "openfreemap").strip().lower(),
+      "https://tiles.openfreemap.org/styles/positron")
+
+_MAPLIBRE_COMPONENT = components.declare_component(
+    "humanpath_maplibre",
+    path=str(Path(__file__).parent / "components" / "maplibre_map" / "frontend"),
+)
+
+
+def _route_geojson(G, routes, focus):
+    """(FeatureCollection, focus_bounds) of route LineStrings in GeoJSON [lon,lat].
+
+    Alternatives get ``role="alt"``, the focused route ``role="focused"``; colour
+    from score_hex. bounds is MapLibre's [[w,s],[e,n]] for the focused route (or
+    None when there are no routes).
+    """
+    if not routes:
+        return {"type": "FeatureCollection", "features": []}, None
+    feats = []
+    order = [i for i in range(len(routes)) if i != focus] + [focus]
+    for i in order:
+        r = routes[i]
+        coords = []
+        for u, v, key in r.edges:
+            coords += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+        feats.append({
+            "type": "Feature",
+            "properties": {"color": score_hex(r.walk_score),
+                           "role": "focused" if i == focus else "alt"},
+            "geometry": {"type": "LineString", "coordinates": coords},
+        })
+    fc = []
+    for u, v, key in routes[focus].edges:
+        fc += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+    bounds = None
+    if fc:
+        lons = [c[0] for c in fc]
+        lats = [c[1] for c in fc]
+        bounds = [[min(lons), min(lats)], [max(lons), max(lats)]]
+    return {"type": "FeatureCollection", "features": feats}, bounds
+
+
 _legend_html = (
     '<div style="display:flex;gap:18px;align-items:center;margin:0 0 8px;'
     'font-family:IBM Plex Mono,monospace;font-size:11px;color:#5c564a;">'
@@ -731,23 +792,43 @@ _focus = st.session_state.focus
 _segmented = st.session_state.get(f"seg_{_focus}", False)
 _weights = st.session_state.active_weights
 
-# Persistent base map (stable key → never remounts), routes as a swappable
-# FeatureGroup, and the camera moved via center/zoom. st_folium only setViews
-# when center/zoom change vs the last pass, so the camera eases to a route on a
-# search or focus switch but stays put on a segment toggle or a manual pan.
-base_map = build_base_map(G)
-route_layer = build_route_layer(G, routes, _focus, _weights, _segmented)
-cam_center, cam_zoom = camera_view(G, routes, _focus)
-# Fold the "Fit route" nonce into BOTH center and zoom as an imperceptible,
-# non-accumulating jitter (alternates 0 / ~0.2 m / 0.001 zoom). Clicking the
-# button flips it, so both values differ from the last pass and st_folium
-# re-fires setView with the *route's* center AND zoom — without the zoom jitter
-# the zoom branch sees `zoom === last_zoom`, keeps the user's current (panned-in)
-# zoom, and only recenters. On every other rerun the nonce is unchanged, so the
-# camera (and any manual pan/zoom) holds.
-_jit = st.session_state.recenter_nonce % 2
-cam_center = (cam_center[0] + _jit * 2e-6, cam_center[1])
-cam_zoom = cam_zoom + _jit * 1e-3
-st_folium(base_map, key="route_map", height=660, use_container_width=True,
-          returned_objects=[], center=cam_center, zoom=cam_zoom,
-          feature_group_to_add=route_layer)
+if _MAP_BACKEND == "maplibre":
+    # B2 GPU vector map (persistent component, no remount). The camera token changes
+    # only on a new search, a focus switch, or Fit route, so the JS animates on
+    # intent only and a plain rerun / manual pan leaves the view alone.
+    _gj, _bounds = _route_geojson(G, routes, _focus)
+    # Camera reframes only on a NEW TRIP (committed origin/destination changes) or
+    # the Fit route button (recenter_nonce) — NOT on a focus switch or a weight-only
+    # re-search — so a manual pan/zoom is preserved while comparing alternatives or
+    # tweaking sliders. Fit route frames whichever route is currently focused.
+    _committed = st.session_state.committed or {}
+    _cam_token = f"{_committed.get('o')}|{_committed.get('d')}|{st.session_state.recenter_nonce}"
+    _MAPLIBRE_COMPONENT(
+        geojson=_gj,
+        camera={"bounds": _bounds, "token": _cam_token, "animate": True},
+        style=_MAPLIBRE_BASEMAP,
+        height=660,
+        key="maplibre_map",
+        default=None,
+    )
+else:
+    # Persistent base map (stable key → never remounts), routes as a swappable
+    # FeatureGroup, and the camera moved via center/zoom. st_folium only setViews
+    # when center/zoom change vs the last pass, so the camera eases to a route on a
+    # search or focus switch but stays put on a segment toggle or a manual pan.
+    base_map = build_base_map(G)
+    route_layer = build_route_layer(G, routes, _focus, _weights, _segmented)
+    cam_center, cam_zoom = camera_view(G, routes, _focus)
+    # Fold the "Fit route" nonce into BOTH center and zoom as an imperceptible,
+    # non-accumulating jitter (alternates 0 / ~0.2 m / 0.001 zoom). Clicking the
+    # button flips it, so both values differ from the last pass and st_folium
+    # re-fires setView with the *route's* center AND zoom — without the zoom jitter
+    # the zoom branch sees `zoom === last_zoom`, keeps the user's current (panned-in)
+    # zoom, and only recenters. On every other rerun the nonce is unchanged, so the
+    # camera (and any manual pan/zoom) holds.
+    _jit = st.session_state.recenter_nonce % 2
+    cam_center = (cam_center[0] + _jit * 2e-6, cam_center[1])
+    cam_zoom = cam_zoom + _jit * 1e-3
+    st_folium(base_map, key="route_map", height=660, use_container_width=True,
+              returned_objects=[], center=cam_center, zoom=cam_zoom,
+              feature_group_to_add=route_layer)

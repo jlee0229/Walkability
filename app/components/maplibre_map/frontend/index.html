@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- MapLibre from CDN for now; production can vendor these as committed static
+       files to drop the runtime CDN dependency. Served from a REAL origin here
+       (Streamlit's component server), not components.html's srcdoc iframe whose
+       null origin CORS-blocked tiles and broke line rendering. -->
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #ece5d5; }
+    #map { position: absolute; inset: 0; }
+    #err {
+      position: absolute; inset: 0; display: none; align-items: center;
+      justify-content: center; font: 14px/1.4 sans-serif; color: #b1592e;
+      padding: 20px; text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="err"></div>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <script src="./main.js"></script>
+</body>
+</html>
