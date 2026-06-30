@@ -14,6 +14,8 @@ and a full-height map. The graph loads once per session (`@st.cache_resource`).
 
 from __future__ import annotations
 
+import math
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -26,6 +28,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import folium
 import numpy as np
+import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 
 from walkability.graph.build import (
@@ -46,6 +49,14 @@ st.set_page_config(page_title="Humanpath", page_icon=_ICON_PATH, layout="wide")
 ACCENT = "#b1592e"
 INK = "#211e18"
 WALK_SPEED_MPS = 1.33  # ~average pedestrian pace, for walk-time estimates
+
+# Map backend flag (B2 rollout): "folium" (default, the shipped st_folium raster
+# map) or "maplibre" (the in-progress GPU vector spike — set HUMANPATH_MAP=maplibre).
+# Keeps the working folium map as a fallback while MapLibre is de-risked/built.
+_MAP_BACKEND = os.environ.get("HUMANPATH_MAP", "folium").strip().lower()
+# Verification hook: force the MapLibre component to report a fatal failure so the
+# graceful st_folium fallback can be exercised end-to-end. (HUMANPATH_MAP_FORCE_FAIL=1)
+_MAP_FORCE_FAIL = os.environ.get("HUMANPATH_MAP_FORCE_FAIL", "").strip() not in ("", "0", "false")
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +81,11 @@ def inject_css() -> None:
 
         /* Hide default Streamlit chrome for a cleaner app shell (but KEEP the
            sidebar collapse/expand control so the rail can be reopened). */
-        header[data-testid="stHeader"] { background: transparent; }
+        /* Transparent header, but let clicks pass THROUGH it: it's an invisible
+           bar over the top of the page that otherwise eats pointer events on the
+           first content row (e.g. the top half of the "Fit route" button). The
+           toolbar/menu it would host are hidden, so nothing in it needs clicks. */
+        header[data-testid="stHeader"] { background: transparent; pointer-events: none; }
         #MainMenu, footer { visibility: hidden; }
         [data-testid="stToolbar"] { display: none; }
         [data-testid="stMainBlockContainer"] { padding-top: 1.0rem; }
@@ -102,7 +117,7 @@ def inject_css() -> None:
         }
         [data-testid="stTextInput"] input:focus { border-color: var(--accent); box-shadow:none; }
 
-        /* Find button (only st.button in the app) */
+        /* Primary action button (Find / Update routes) */
         .stButton > button {
             width:100%; border:none; border-radius:13px; background:var(--accent); color:#fdfbf6;
             font-family:'Public Sans',sans-serif; font-weight:600; font-size:15px; padding:13px 15px;
@@ -110,6 +125,15 @@ def inject_css() -> None:
         }
         .stButton > button:hover { filter:brightness(1.05); color:#fff; }
         .stButton > button:focus { color:#fff; }
+
+        /* "Fit route" map control — quiet outlined secondary, not the big terracotta */
+        .st-key-fit_route_btn > button,
+        .st-key-fit_route_btn button {
+            background:#fffdf8; color:var(--accent); border:1px solid #e0c4b2;
+            box-shadow:none; font-size:12px; font-weight:600; padding:6px 10px; border-radius:9px;
+        }
+        .st-key-fit_route_btn button:hover { filter:none; background:#f7e9e0; color:var(--accent); }
+        .st-key-fit_route_btn button:focus { color:var(--accent); }
 
         /* Expander panels (route Details, Map area) — quiet, recessed */
         [data-testid="stExpander"] { border:1px solid #e6dfce; border-radius:13px; background:#fffdf8; }
@@ -323,6 +347,15 @@ def _toggle(key: str) -> None:
     st.session_state[key] = not st.session_state.get(key, False)
 
 
+def _recenter() -> None:
+    # Bump a nonce so the camera value we pass to st_folium *changes* on the next
+    # run, forcing a setView back onto the route. Needed because st_folium only
+    # moves the camera when center/zoom differ from the last value we passed, and
+    # a manual pan doesn't update that last value — so re-passing the same frame
+    # would be a no-op. The nonce becomes an imperceptible jitter (see call site).
+    st.session_state.recenter_nonce += 1
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -331,9 +364,9 @@ st.session_state.setdefault("routes", [])
 st.session_state.setdefault("focus", 0)            # index of route emphasised on the map
 st.session_state.setdefault("committed", None)     # params behind the shown routes
 st.session_state.setdefault("active_weights", FACTOR_WEIGHTS)  # weights the shown routes/colours use
-st.session_state.setdefault("view_token", 0)       # bump to remount the map on a new search
 st.session_state.setdefault("region", None)
 st.session_state.setdefault("error", None)
+st.session_state.setdefault("recenter_nonce", 0)  # bumped by the "Fit route" button
 
 inject_css()
 
@@ -441,7 +474,6 @@ if find:
         st.session_state.committed = params
         st.session_state.active_weights = weights  # freeze rendering to the committed weights
         st.session_state.focus = 0
-        st.session_state.view_token += 1  # re-frame the map to the new result
 
 routes = st.session_state.routes
 
@@ -556,20 +588,55 @@ with st.sidebar:
 # Map (main area)
 # ---------------------------------------------------------------------------
 
-def _focused_center(G, route):
-    ys = [G.nodes[n]["y"] for n in route.nodes]
-    xs = [G.nodes[n]["x"] for n in route.nodes]
-    return (sum(ys) / len(ys), sum(xs) / len(xs))
+# Camera fit geometry. The base map is rendered once and never re-rendered (so
+# the iframe never remounts / reloads tiles); the camera is moved by passing
+# `center`/`zoom` to st_folium, which dynamically `setView`s the live map only
+# when the value changes (see the call site). st_folium has no animated flyTo,
+# so we compute an explicit (center, zoom) that fits the focused route's bbox —
+# the Web-Mercator `getBoundsZoom` math Leaflet's fitBounds uses internally.
+_MAP_PX_H = 660       # matches the st_folium height
+_MAP_PX_W = 760       # conservative width estimate (container width is unknown
+                      # server-side); erring narrow zooms out a touch so a wide
+                      # route is never clipped left/right
+_MAP_PAD_PX = 48      # breathing room around the route, like fitBounds padding
+_MAP_ZOOM_MAX = 17.0  # don't zoom past street level on a very short walk
+_BASE_ZOOM = 13.0     # initial base-map zoom before the first route fit
 
 
-def build_map(G, routes, focus, weights, segmented):
-    # Centre on the focused route (never the graph default) so any re-render lands
-    # on the trip, not on the city centroid. Native wheel zoom (the SmoothWheelZoom
-    # plugin doesn't execute inside st_folium's iframe): zoom_snap=0 for fractional
-    # zoom, wheel_px_per_zoom_level=40 for a brisk-but-smooth trackpad/mouse zoom.
-    center = _focused_center(G, routes[focus]) if routes else _graph_center(G)
-    fmap = folium.Map(location=center, zoom_start=14, tiles=None, zoom_control=True,
-                      zoom_snap=0, wheel_px_per_zoom_level=40)
+def _lat_rad(lat: float) -> float:
+    s = math.sin(math.radians(lat))
+    return max(min(math.log((1 + s) / (1 - s)) / 2, math.pi), -math.pi) / 2
+
+
+def _bounds_to_view(min_lat, min_lon, max_lat, max_lon):
+    """(center, zoom) that fits a lat/lon bbox in the map viewport with padding.
+
+    Mirrors Leaflet/Google `getBoundsZoom`: the largest zoom at which the bbox
+    still fits inside (viewport − padding). Fractional zoom is fine (the base
+    map uses zoom_snap=0).
+    """
+    def _z(px, fraction):
+        return math.log(max(px, 1) / 256.0 / fraction) / math.log(2) if fraction > 0 else _MAP_ZOOM_MAX
+    lat_fraction = (_lat_rad(max_lat) - _lat_rad(min_lat)) / math.pi
+    lng_fraction = ((max_lon - min_lon) % 360) / 360.0
+    zoom = min(_z(_MAP_PX_H - 2 * _MAP_PAD_PX, lat_fraction),
+               _z(_MAP_PX_W - 2 * _MAP_PAD_PX, lng_fraction),
+               _MAP_ZOOM_MAX)
+    return ((min_lat + max_lat) / 2.0, (min_lon + max_lon) / 2.0), round(zoom, 2)
+
+
+def build_base_map(G):
+    """The tiles-only base map, rendered ONCE.
+
+    It carries no routes and a constant centre/zoom so its generated Leaflet JS
+    is stable across reruns — st_folium hashes that JS, so a stable hash means
+    the component (iframe) is never remounted: no white flash, no tile reload.
+    Routes ride in a FeatureGroup and the camera moves via center/zoom props.
+    Native wheel zoom (zoom_snap=0 fractional, brisk wheel step); the
+    SmoothWheelZoom plugin doesn't execute inside st_folium's iframe.
+    """
+    fmap = folium.Map(location=_graph_center(G), zoom_start=_BASE_ZOOM, tiles=None,
+                      zoom_control=True, zoom_snap=0, wheel_px_per_zoom_level=40)
     folium.TileLayer(
         "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png",
         attr="© OpenStreetMap, © CARTO", subdomains="abcd", max_zoom=20, control=False,
@@ -578,26 +645,34 @@ def build_map(G, routes, focus, weights, segmented):
         "https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png",
         attr="© CARTO", subdomains="abcd", max_zoom=20, control=False,
     ).add_to(fmap)
+    return fmap
 
+
+def build_route_layer(G, routes, focus, weights, segmented):
+    """All routes + O/D markers as a single FeatureGroup for dynamic swapping.
+
+    Passed to st_folium via `feature_group_to_add`, which replaces just this
+    layer on the persistent base map (no rebuild). Alternatives are drawn first
+    (faint), the focused route last and on top — a single smooth line, or
+    per-block coloured pieces when `segmented`.
+    """
+    fg = folium.FeatureGroup(name="routes")
     if not routes:
-        return fmap
+        return fg
 
-    # Alternatives first (faint), focused route last + on top. The focused route
-    # is a single smooth line by default; only "Show segments" (segmented=True)
-    # breaks it into per-block coloured pieces.
     order = [i for i in range(len(routes)) if i != focus] + [focus]
     for i in order:
         r = routes[i]
         if i != focus:
             coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in r.nodes]
             folium.PolyLine(coords, color=score_hex(r.walk_score), weight=4,
-                            opacity=0.4, line_cap="round").add_to(fmap)
+                            opacity=0.4, line_cap="round").add_to(fg)
         else:
             full = []
             for u, v, key in r.edges:
                 full += _edge_coords(G, u, v, key)
             folium.PolyLine(full, color="#faf8f2", weight=10, opacity=1,
-                            line_cap="round", line_join="round").add_to(fmap)  # halo
+                            line_cap="round", line_join="round").add_to(fg)  # halo
             if segmented:
                 for u, v, key in r.edges:
                     cs = _edge_coords(G, u, v, key)
@@ -605,36 +680,185 @@ def build_map(G, routes, focus, weights, segmented):
                     folium.PolyLine(
                         cs, color=score_hex(w), weight=6, opacity=1, line_cap="round",
                         tooltip=f"walk {round(w*100)}/100 · {_as_str(G[u][v][key].get('highway')) or 'path'}",
-                    ).add_to(fmap)
+                    ).add_to(fg)
             else:
                 folium.PolyLine(
                     full, color=score_hex(r.walk_score), weight=6, opacity=1,
                     line_cap="round", line_join="round",
                     tooltip=f"Walk score {round(r.walk_score*100)}/100",
-                ).add_to(fmap)
+                ).add_to(fg)
 
     focal = routes[focus]
     o = (G.nodes[focal.nodes[0]]["y"], G.nodes[focal.nodes[0]]["x"])
     d = (G.nodes[focal.nodes[-1]]["y"], G.nodes[focal.nodes[-1]]["x"])
     folium.CircleMarker(o, radius=7, color="#faf8f2", weight=3, fill_color=ACCENT,
-                        fill_opacity=1, tooltip="Start").add_to(fmap)
+                        fill_opacity=1, tooltip="Start").add_to(fg)
     folium.CircleMarker(d, radius=7, color="#faf8f2", weight=3, fill_color=INK,
-                        fill_opacity=1, tooltip="Destination").add_to(fmap)
-    # Fit the camera to the FOCUSED route. st_folium only re-renders (and thus
-    # re-fits) when the figure actually changes — i.e. on a search, on "Show on
-    # map", or on a segment toggle — so editing sliders/addresses leaves the view
-    # alone, and the camera never snaps to the city default.
+                        fill_opacity=1, tooltip="Destination").add_to(fg)
+    return fg
+
+
+def camera_view(G, routes, focus):
+    """(center, zoom) to frame the focused route, or the city default if none.
+
+    Returned to the call site and handed to st_folium as `center`/`zoom`. It is
+    a pure function of the focused route, so it stays constant across reruns that
+    don't change the route — st_folium then leaves the camera (and any manual
+    pan/zoom) untouched — and changes only on a new search or a focus switch,
+    when st_folium `setView`s to the new frame.
+    """
+    if not routes:
+        return _graph_center(G), _BASE_ZOOM
     fpts = []
     for u, v, key in routes[focus].edges:
         fpts += _edge_coords(G, u, v, key)
-    if fpts:
-        lats = [p[0] for p in fpts]
-        lons = [p[1] for p in fpts]
-        fmap.fit_bounds([(min(lats), min(lons)), (max(lats), max(lons))], padding=(60, 60))
-    return fmap
+    if not fpts:
+        return _graph_center(G), _BASE_ZOOM
+    lats = [p[0] for p in fpts]
+    lons = [p[1] for p in fpts]
+    return _bounds_to_view(min(lats), min(lons), max(lats), max(lons))
 
 
-st.markdown(
+# ---------------------------------------------------------------------------
+# MapLibre GL component (B2) — used only when HUMANPATH_MAP=maplibre. A build-less
+# static Streamlit component (app/components/maplibre_map/frontend/) served from a
+# REAL origin via declare_component, so external tiles load and lines render —
+# unlike the earlier components.html `srcdoc` spike, whose null origin CORS-blocked
+# tiles and broke line rendering. Python passes a route GeoJSON + a camera target;
+# main.js keeps a PERSISTENT map and updates layers/camera per rerun (no remount).
+# Basemap: OpenFreeMap for now (HUMANPATH_STYLE to switch); production = self-hosted
+# Protomaps PMTiles (B2.1b). MapLibre is CDN-loaded for now; vendor for production.
+_HUMANPATH_STYLE = os.environ.get("HUMANPATH_STYLE", "openfreemap").strip().lower()
+
+# B2.1b PMTiles validation: a public, CORS-open (access-control-allow-origin: *),
+# range-request-enabled Protomaps demo file (Florence). Proves the pmtiles://
+# protocol + HTTP range + CORS + GPU vector render work INSIDE our real-origin
+# component iframe — the make-or-break unknown. (The Protomaps demo *planet* is
+# origin-locked to maps.protomaps.com, so production needs a self-hosted Boston
+# .pmtiles; this only validates the mechanism.) Schema = the old Protomaps v2
+# layers in that file (landuse/roads/mask), per the MapLibre pmtiles example.
+_PMTILES_DEMO_URL = "pmtiles://https://pmtiles.io/protomaps(vector)ODbL_firenze.pmtiles"
+_PMTILES_DEMO_CENTER = [11.2558, 43.7696]  # Florence, [lon, lat]
+_PMTILES_DEMO_STYLE = {
+    "version": 8,
+    "sources": {
+        "demo": {
+            "type": "vector", "url": _PMTILES_DEMO_URL,
+            "attribution": '© <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
+        },
+    },
+    "layers": [
+        {"id": "bg", "type": "background", "paint": {"background-color": "#ece5d5"}},
+        {"id": "mask", "type": "fill", "source": "demo", "source-layer": "mask",
+         "paint": {"fill-color": "#faf8f2"}},
+        {"id": "buildings", "type": "fill", "source": "demo", "source-layer": "landuse",
+         "paint": {"fill-color": "#e3d8bd"}},
+        {"id": "roads", "type": "line", "source": "demo", "source-layer": "roads",
+         "paint": {"line-color": "#b1592e", "line-width": 1.0}},
+    ],
+}
+
+# Production basemap: self-hosted Boston Protomaps PMTiles (v4 schema) rendered with
+# the protomaps-themes-base theme (built in main.js via the `_protomaps` marker).
+# HUMANPATH_PMTILES_URL overrides the .pmtiles location (default = the local CORS+
+# range test server; production = the Cloudflare R2 public URL).
+_PMTILES_BOSTON_URL = os.environ.get(
+    "HUMANPATH_PMTILES_URL", "http://localhost:8000/boston.pmtiles").strip()
+_PMTILES_BOSTON_STYLE = {"_protomaps": {"url": "pmtiles://" + _PMTILES_BOSTON_URL, "flavor": "light"}}
+
+_MAPLIBRE_BASEMAP = {
+    "demotiles": "https://demotiles.maplibre.org/style.json",
+    "openfreemap": "https://tiles.openfreemap.org/styles/positron",
+    "pmtiles-demo": _PMTILES_DEMO_STYLE,
+    "pmtiles-boston": _PMTILES_BOSTON_STYLE,
+}.get(_HUMANPATH_STYLE, "https://tiles.openfreemap.org/styles/positron")
+
+_MAPLIBRE_COMPONENT = components.declare_component(
+    "humanpath_maplibre",
+    path=str(Path(__file__).parent / "components" / "maplibre_map" / "frontend"),
+)
+
+
+def _route_lonlat(G, r):
+    """Full edge geometry of a route as GeoJSON [lon, lat] coords."""
+    coords = []
+    for u, v, key in r.edges:
+        coords += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+    return coords
+
+
+def _line_feature(coords, props):
+    return {"type": "Feature", "properties": props,
+            "geometry": {"type": "LineString", "coordinates": coords}}
+
+
+def _route_geojson(G, routes, focus, weights, segmented):
+    """(routes_fc, points_fc, focus_bounds) for the MapLibre component.
+
+    Mirrors the folium ``build_route_layer`` parity exactly. ``routes_fc`` holds,
+    by ``role``: faint ``alt`` lines (one per alternative), a single white ``halo``
+    under the focused route, and the focused line as either one ``focused`` feature
+    or many per-block ``segment`` features (when ``segmented``). Each carries a
+    ``color`` and a hover ``label``. ``points_fc`` holds the O/D markers
+    (``role`` origin/dest). ``bounds`` is MapLibre's [[w,s],[e,n]] for the focused
+    route. Coords are GeoJSON [lon, lat]. Empty when there are no routes.
+    """
+    empty = {"type": "FeatureCollection", "features": []}
+    if not routes:
+        return dict(empty), dict(empty), None
+
+    feats = []
+    # Alternatives first (drawn underneath), focused last (on top).
+    for i in range(len(routes)):
+        if i == focus:
+            continue
+        r = routes[i]
+        feats.append(_line_feature(_route_lonlat(G, r), {
+            "role": "alt", "color": score_hex(r.walk_score),
+            "label": f"Walk score {round(r.walk_score * 100)}/100"}))
+
+    focal = routes[focus]
+    full = _route_lonlat(G, focal)
+    feats.append(_line_feature(full, {"role": "halo"}))  # continuous white casing
+    joints = []  # block-boundary dots (segmented mode) so adjacent blocks read apart
+    if segmented:
+        seg_coords = []
+        for u, v, key in focal.edges:
+            w, _ = edge_walkability(G[u][v][key], weights)
+            hwy = _as_str(G[u][v][key].get("highway")) or "path"
+            cs = [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+            seg_coords.append(cs)
+            feats.append(_line_feature(cs, {
+                "role": "segment", "color": score_hex(w),
+                "label": f"walk {round(w * 100)}/100 · {hwy}"}))
+        # A small dot at each interior block boundary (start of every block but the
+        # first) — crisp separation without the old (ugly) white gaps.
+        for cs in seg_coords[1:]:
+            if cs:
+                joints.append({
+                    "type": "Feature", "properties": {"role": "joint"},
+                    "geometry": {"type": "Point", "coordinates": cs[0]}})
+    else:
+        feats.append(_line_feature(full, {
+            "role": "focused", "color": score_hex(focal.walk_score),
+            "label": f"Walk score {round(focal.walk_score * 100)}/100"}))
+
+    points, bounds = [], None
+    if full:
+        points = joints + [
+            {"type": "Feature", "properties": {"role": "origin", "label": "Start"},
+             "geometry": {"type": "Point", "coordinates": full[0]}},
+            {"type": "Feature", "properties": {"role": "dest", "label": "Destination"},
+             "geometry": {"type": "Point", "coordinates": full[-1]}},
+        ]
+        lons = [c[0] for c in full]
+        lats = [c[1] for c in full]
+        bounds = [[min(lons), min(lats)], [max(lons), max(lats)]]
+    return ({"type": "FeatureCollection", "features": feats},
+            {"type": "FeatureCollection", "features": points}, bounds)
+
+
+_legend_html = (
     '<div style="display:flex;gap:18px;align-items:center;margin:0 0 8px;'
     'font-family:IBM Plex Mono,monospace;font-size:11px;color:#5c564a;">'
     '<span style="text-transform:uppercase;letter-spacing:0.12em;color:#a8a08c;">Walk score by block</span>'
@@ -642,11 +866,81 @@ st.markdown(
     '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#789b3e;vertical-align:middle;"></span> 65–79</span>'
     '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c8922f;vertical-align:middle;"></span> 50–64</span>'
     '<span><span style="display:inline-block;width:18px;height:4px;border-radius:2px;background:#c0512f;vertical-align:middle;"></span> under 50</span>'
-    '</div>',
-    unsafe_allow_html=True,
+    '</div>'
 )
+if routes:
+    _leg_col, _btn_col = st.columns([5, 1], vertical_alignment="center")
+    _leg_col.markdown(_legend_html, unsafe_allow_html=True)
+    _btn_col.button("Fit route", key="fit_route_btn", on_click=_recenter,
+                    use_container_width=True, help="Recenter the map on the selected route.")
+else:
+    st.markdown(_legend_html, unsafe_allow_html=True)
 
-_segmented = st.session_state.get(f"seg_{st.session_state.focus}", False)
-fmap = build_map(G, routes, st.session_state.focus, st.session_state.active_weights, _segmented)
-st_folium(fmap, key=f"map_{st.session_state.view_token}", height=660,
-          use_container_width=True, returned_objects=[])
+_focus = st.session_state.focus
+_segmented = st.session_state.get(f"seg_{_focus}", False)
+_weights = st.session_state.active_weights
+
+# Graceful fallback: the MapLibre component reports a fatal client-side failure
+# (no WebGL, a lib failed to load, map init threw) back to Python via
+# setComponentValue; we latch it for the session and render the st_folium map
+# instead, so the app never goes blank. (Streamlit picks the backend server-side
+# before the component runs, so this round-trip is the only real fallback path.)
+_use_maplibre = _MAP_BACKEND == "maplibre" and not st.session_state.get("maplibre_failed")
+
+if _use_maplibre:
+    # B2 GPU vector map (persistent component, no remount). The camera token changes
+    # only on a new search, a focus switch, or Fit route, so the JS animates on
+    # intent only and a plain rerun / manual pan leaves the view alone.
+    _gj, _points, _bounds = _route_geojson(G, routes, _focus, _weights, _segmented)
+    # Camera reframes only on a NEW TRIP (committed origin/destination changes) or
+    # the Fit route button (recenter_nonce) — NOT on a focus switch or a weight-only
+    # re-search — so a manual pan/zoom is preserved while comparing alternatives or
+    # tweaking sliders. Fit route frames whichever route is currently focused.
+    _committed = st.session_state.committed or {}
+    _cam_token = f"{_committed.get('o')}|{_committed.get('d')}|{st.session_state.recenter_nonce}"
+    # Initial map view (used once, on first creation): the demo basemap is Florence,
+    # otherwise the loaded graph's centre. [lon, lat] for MapLibre.
+    if _HUMANPATH_STYLE == "pmtiles-demo":
+        _init_center, _init_zoom = _PMTILES_DEMO_CENTER, 13
+    else:
+        _gc = _graph_center(G)
+        _init_center, _init_zoom = [_gc[1], _gc[0]], _BASE_ZOOM
+    _ml_val = _MAPLIBRE_COMPONENT(
+        geojson=_gj,
+        points=_points,
+        camera={"bounds": _bounds, "token": _cam_token, "animate": True},
+        style=_MAPLIBRE_BASEMAP,
+        center=_init_center,
+        zoom=_init_zoom,
+        forceFail=_MAP_FORCE_FAIL,
+        height=660,
+        key="maplibre_map",
+        default=None,
+    )
+    if isinstance(_ml_val, dict) and _ml_val.get("status") == "error":
+        # Component failed in the browser — latch and re-render with folium.
+        st.session_state.maplibre_failed = True
+        st.rerun()
+else:
+    # Persistent base map (stable key → never remounts), routes as a swappable
+    # FeatureGroup, and the camera moved via center/zoom. st_folium only setViews
+    # when center/zoom change vs the last pass, so the camera eases to a route on a
+    # search or focus switch but stays put on a segment toggle or a manual pan.
+    if _MAP_BACKEND == "maplibre" and st.session_state.get("maplibre_failed"):
+        st.warning("Interactive vector map unavailable — using the standard map.", icon="🗺️")
+    base_map = build_base_map(G)
+    route_layer = build_route_layer(G, routes, _focus, _weights, _segmented)
+    cam_center, cam_zoom = camera_view(G, routes, _focus)
+    # Fold the "Fit route" nonce into BOTH center and zoom as an imperceptible,
+    # non-accumulating jitter (alternates 0 / ~0.2 m / 0.001 zoom). Clicking the
+    # button flips it, so both values differ from the last pass and st_folium
+    # re-fires setView with the *route's* center AND zoom — without the zoom jitter
+    # the zoom branch sees `zoom === last_zoom`, keeps the user's current (panned-in)
+    # zoom, and only recenters. On every other rerun the nonce is unchanged, so the
+    # camera (and any manual pan/zoom) holds.
+    _jit = st.session_state.recenter_nonce % 2
+    cam_center = (cam_center[0] + _jit * 2e-6, cam_center[1])
+    cam_zoom = cam_zoom + _jit * 1e-3
+    st_folium(base_map, key="route_map", height=660, use_container_width=True,
+              returned_objects=[], center=cam_center, zoom=cam_zoom,
+              feature_group_to_add=route_layer)

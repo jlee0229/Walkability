@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Vendored libs (committed under vendor/, shipped by Docker COPY . .) so the
+       deployed map has NO runtime CDN dependency. Pinned: maplibre-gl 4.7.1,
+       pmtiles 3.2.0, @protomaps/basemaps 5.7.2. Re-vendor by re-downloading from
+       the CDNs (see CLAUDE.md). Served from a REAL origin (Streamlit's component
+       server), not components.html's srcdoc iframe whose null origin CORS-blocked
+       tiles and broke line rendering. -->
+  <link href="./vendor/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #ece5d5; }
+    #map { position: absolute; inset: 0; }
+    #err {
+      position: absolute; inset: 0; display: none; align-items: center;
+      justify-content: center; font: 14px/1.4 sans-serif; color: #b1592e;
+      padding: 20px; text-align: center;
+    }
+    /* Brand hover tooltip — parchment card, ink mono text, terracotta hairline. */
+    .hp-pop .maplibregl-popup-content {
+      background: #faf8f2; color: #211e18; border: 1px solid #e2d8c4;
+      border-radius: 7px; padding: 5px 9px; box-shadow: 0 2px 8px rgba(33,30,24,0.16);
+      font: 11.5px/1.3 "IBM Plex Mono", ui-monospace, monospace; white-space: nowrap;
+    }
+    .hp-pop .maplibregl-popup-tip { display: none; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="err"></div>
+  <script src="./vendor/maplibre-gl.js"></script>
+  <!-- pmtiles protocol (B2.1b): lets MapLibre read a single .pmtiles via HTTP range
+       requests. main.js registers it with maplibregl.addProtocol when present. -->
+  <script src="./vendor/pmtiles.js"></script>
+  <!-- Protomaps basemap theme (v4 schema) — UMD global `basemaps`; main.js calls
+       basemaps.layers(...) to build the full style when given a _protomaps marker. -->
+  <script src="./vendor/basemaps.js"></script>
+  <script src="./main.js"></script>
+</body>
+</html>
