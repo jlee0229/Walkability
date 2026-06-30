@@ -242,9 +242,13 @@ behaviours, several of them hard-won — **don't regress**:
   before the widget renders (default `full`).
 - **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
   fought st_folium reruns and added clutter). Origin/destination are addresses,
-  geocoded by `geocode()` → **Nominatim scoped to a Boston bounding box**
-  (`bounded=1`, then the box as a soft bias), wrapped in `@st.cache_data`;
-  `osmnx.geocode` is the unbounded fallback.
+  geocoded by `geocode()`, Boston-biased and `@st.cache_data`-wrapped. **Primary is
+  Photon** (komoot — OSM-based, no key, tolerant of server/cloud use); **Nominatim is
+  a timed fallback**. Nominatim's public server rate-limits/blocks shared cloud IPs
+  (Streamlit Community Cloud), which used to **hang** the deployed app on "Reading the
+  streets…" via a no-timeout `osmnx.geocode` fallback — that fallback was removed and
+  every call now has a hard timeout, so geocoding can never spin forever (worst case →
+  "couldn't find that address").
 - **`alpha` + per-factor weight sliders.** The 0–100 "how you'll walk" slider maps
   to `alpha = slider/100·5`. Weights thread through `find_routes` → `edge_cost`/
   `_build_route` → `edge_walkability`; untouched, the `FACTOR_WEIGHTS` object itself
@@ -323,9 +327,9 @@ behaviours, several of them hard-won — **don't regress**:
   `python -m walkability.graph.compact [--all|--dev|--region <r>]` (a post-process
   on the enriched GraphML — **no `--force` rebuild**); the app's `get_graph` loads
   the `*.runtime.pkl` sibling, downloading it from the release in preference to the
-  GraphML (which remains the fallback). **Deploy step still owed:** upload the
-  `*.runtime.pkl` assets to the `data-v1` GitHub Release (until then deploy falls
-  back to the heavy GraphML).
+  GraphML (which remains the fallback). The `*.runtime.pkl` assets are **uploaded to
+  the `data-v1` GitHub Release**, so the live app loads the slim graph; this is what
+  cleared the 1 GB cap and let the app move to **Streamlit Community Cloud**.
 - **Graph RAM — Phase 2 (open): compact CSR arrays.** For sub-100 MB / instant
   load, replace the per-query NetworkX substrate with numpy CSR (`indptr` + flat
   `float32` edge fields, code-mapped categoricals, packed geometry) — no Python
@@ -335,6 +339,15 @@ behaviours, several of them hard-won — **don't regress**:
   the bottom of the rail and currently offers Full Boston + the `DEV_REGIONS` test
   beds. When real additional areas/cities are added, promote it to a first-class
   control (and reconsider placement). Areas come from `DEV_REGIONS` in `build.py`.
+- **Routes are clipped to Boston's municipal boundary (known limitation).** The walk
+  graph is the OSM extract for the **city of Boston only**, so any route whose
+  geographically optimal path leaves the city is forced to detour and comes out
+  suboptimal. The sharpest case is **Brookline** — a separate town wedged into Boston
+  between Allston/Brighton and Jamaica Plain/Mission Hill: an Allston→Jamaica Plain
+  walk would naturally cut through Brookline, but those streets aren't in the graph,
+  so the router takes the longer way around *within* Boston. Fixing it means widening
+  the OSM extract past the city line (in `graph/download.py`) and rebuilding/
+  re-enriching; the scoring/routing code is unaffected.
 - Additional factors in `FACTOR_WEIGHTS` (`crossing_quality`, `poi_density`,
   `elevation_change`) remain removed — no enrichment tier produces that edge data
   yet. Re-add a weight only alongside the edge field that feeds it. (`environment`
