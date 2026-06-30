@@ -776,37 +776,83 @@ _MAPLIBRE_COMPONENT = components.declare_component(
 )
 
 
-def _route_geojson(G, routes, focus):
-    """(FeatureCollection, focus_bounds) of route LineStrings in GeoJSON [lon,lat].
+def _route_lonlat(G, r):
+    """Full edge geometry of a route as GeoJSON [lon, lat] coords."""
+    coords = []
+    for u, v, key in r.edges:
+        coords += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+    return coords
 
-    Alternatives get ``role="alt"``, the focused route ``role="focused"``; colour
-    from score_hex. bounds is MapLibre's [[w,s],[e,n]] for the focused route (or
-    None when there are no routes).
+
+def _line_feature(coords, props):
+    return {"type": "Feature", "properties": props,
+            "geometry": {"type": "LineString", "coordinates": coords}}
+
+
+def _route_geojson(G, routes, focus, weights, segmented):
+    """(routes_fc, points_fc, focus_bounds) for the MapLibre component.
+
+    Mirrors the folium ``build_route_layer`` parity exactly. ``routes_fc`` holds,
+    by ``role``: faint ``alt`` lines (one per alternative), a single white ``halo``
+    under the focused route, and the focused line as either one ``focused`` feature
+    or many per-block ``segment`` features (when ``segmented``). Each carries a
+    ``color`` and a hover ``label``. ``points_fc`` holds the O/D markers
+    (``role`` origin/dest). ``bounds`` is MapLibre's [[w,s],[e,n]] for the focused
+    route. Coords are GeoJSON [lon, lat]. Empty when there are no routes.
     """
+    empty = {"type": "FeatureCollection", "features": []}
     if not routes:
-        return {"type": "FeatureCollection", "features": []}, None
+        return dict(empty), dict(empty), None
+
     feats = []
-    order = [i for i in range(len(routes)) if i != focus] + [focus]
-    for i in order:
+    # Alternatives first (drawn underneath), focused last (on top).
+    for i in range(len(routes)):
+        if i == focus:
+            continue
         r = routes[i]
-        coords = []
-        for u, v, key in r.edges:
-            coords += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
-        feats.append({
-            "type": "Feature",
-            "properties": {"color": score_hex(r.walk_score),
-                           "role": "focused" if i == focus else "alt"},
-            "geometry": {"type": "LineString", "coordinates": coords},
-        })
-    fc = []
-    for u, v, key in routes[focus].edges:
-        fc += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
-    bounds = None
-    if fc:
-        lons = [c[0] for c in fc]
-        lats = [c[1] for c in fc]
+        feats.append(_line_feature(_route_lonlat(G, r), {
+            "role": "alt", "color": score_hex(r.walk_score),
+            "label": f"Walk score {round(r.walk_score * 100)}/100"}))
+
+    focal = routes[focus]
+    full = _route_lonlat(G, focal)
+    feats.append(_line_feature(full, {"role": "halo"}))  # continuous white casing
+    joints = []  # block-boundary dots (segmented mode) so adjacent blocks read apart
+    if segmented:
+        seg_coords = []
+        for u, v, key in focal.edges:
+            w, _ = edge_walkability(G[u][v][key], weights)
+            hwy = _as_str(G[u][v][key].get("highway")) or "path"
+            cs = [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+            seg_coords.append(cs)
+            feats.append(_line_feature(cs, {
+                "role": "segment", "color": score_hex(w),
+                "label": f"walk {round(w * 100)}/100 · {hwy}"}))
+        # A small dot at each interior block boundary (start of every block but the
+        # first) — crisp separation without the old (ugly) white gaps.
+        for cs in seg_coords[1:]:
+            if cs:
+                joints.append({
+                    "type": "Feature", "properties": {"role": "joint"},
+                    "geometry": {"type": "Point", "coordinates": cs[0]}})
+    else:
+        feats.append(_line_feature(full, {
+            "role": "focused", "color": score_hex(focal.walk_score),
+            "label": f"Walk score {round(focal.walk_score * 100)}/100"}))
+
+    points, bounds = [], None
+    if full:
+        points = joints + [
+            {"type": "Feature", "properties": {"role": "origin", "label": "Start"},
+             "geometry": {"type": "Point", "coordinates": full[0]}},
+            {"type": "Feature", "properties": {"role": "dest", "label": "Destination"},
+             "geometry": {"type": "Point", "coordinates": full[-1]}},
+        ]
+        lons = [c[0] for c in full]
+        lats = [c[1] for c in full]
         bounds = [[min(lons), min(lats)], [max(lons), max(lats)]]
-    return {"type": "FeatureCollection", "features": feats}, bounds
+    return ({"type": "FeatureCollection", "features": feats},
+            {"type": "FeatureCollection", "features": points}, bounds)
 
 
 _legend_html = (
@@ -835,7 +881,7 @@ if _MAP_BACKEND == "maplibre":
     # B2 GPU vector map (persistent component, no remount). The camera token changes
     # only on a new search, a focus switch, or Fit route, so the JS animates on
     # intent only and a plain rerun / manual pan leaves the view alone.
-    _gj, _bounds = _route_geojson(G, routes, _focus)
+    _gj, _points, _bounds = _route_geojson(G, routes, _focus, _weights, _segmented)
     # Camera reframes only on a NEW TRIP (committed origin/destination changes) or
     # the Fit route button (recenter_nonce) — NOT on a focus switch or a weight-only
     # re-search — so a manual pan/zoom is preserved while comparing alternatives or
@@ -851,6 +897,7 @@ if _MAP_BACKEND == "maplibre":
         _init_center, _init_zoom = [_gc[1], _gc[0]], _BASE_ZOOM
     _MAPLIBRE_COMPONENT(
         geojson=_gj,
+        points=_points,
         camera={"bounds": _bounds, "token": _cam_token, "animate": True},
         style=_MAPLIBRE_BASEMAP,
         center=_init_center,

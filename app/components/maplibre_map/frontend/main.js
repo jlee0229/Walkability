@@ -6,9 +6,12 @@
  * updates and camera moves are dynamic and smooth.
  *
  * Python args (event.data.args):
- *   geojson : FeatureCollection of route LineStrings ({color, role} props)
+ *   geojson : FeatureCollection of route lines — role: alt | halo | focused |
+ *             segment, plus {color, label} for paint/hover
+ *   points  : FeatureCollection of O/D markers (role: origin | dest, {label})
  *   camera  : { bounds:[[w,s],[e,n]]|null, token:str, animate:bool }
- *   style   : MapLibre style URL or object (basemap)
+ *   style   : MapLibre style URL/object, or a {_protomaps} marker (basemap)
+ *   center, zoom : initial view (first creation only)
  *   height  : iframe height in px
  *
  * Camera moves only when `token` changes (search / focus switch / Fit route), so
@@ -30,29 +33,45 @@
   // Protomaps basemap theme (build-less; `basemaps` is the @protomaps/basemaps UMD
   // global). Keeps the heavy ~100-layer theme out of the Python<->JS payload and
   // lets it version-track the CDN. Pass-through for plain style URLs/objects.
+  // Humanpath brand palette — warm the neutral-grey "light" flavor toward the app's
+  // parchment/terracotta editorial look. Tinting at the flavor (colour-token) level
+  // propagates through all ~100 generated layers, far cleaner than recolouring each.
+  var BRAND_FLAVOR = {
+    background: "#f0ebe0", earth: "#f4efe4", water: "#c2d4d6",
+    buildings: "#e7dcc6", pedestrian: "#efe9da",
+    // Clearer greens so parks read against the pale parchment earth.
+    park_a: "#cde0bd", wood_a: "#c6dcb2", scrub_a: "#d2e0cc",
+  };
+
   function resolveStyle(style) {
     if (!style || !style._protomaps) return style;
     var pm = style._protomaps;
     if (typeof basemaps === "undefined") { showErr("@protomaps/basemaps failed to load"); return style; }
+    var flavorName = pm.flavor || "light";
+    var flavor = Object.assign({}, basemaps.namedFlavor(flavorName), BRAND_FLAVOR);
     return {
       version: 8,
       glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
-      sprite: "https://protomaps.github.io/basemaps-assets/sprites/v4/" + (pm.flavor || "light"),
+      sprite: "https://protomaps.github.io/basemaps-assets/sprites/v4/" + flavorName,
       sources: {
         protomaps: {
           type: "vector", url: pm.url,
           attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
         },
       },
-      layers: basemaps.layers("protomaps", basemaps.namedFlavor(pm.flavor || "light"), { lang: "en" }),
+      layers: basemaps.layers("protomaps", flavor, { lang: "en" }),
     };
   }
+
+  var EMPTY_FC = { type: "FeatureCollection", features: [] };
+  var ACCENT = "#b1592e", INK = "#211e18", HALO = "#faf8f2";
 
   var map = null;
   var styleLoaded = false;
   var lastToken = null;
   var lastHeight = null;
-  var pendingGeojson = null;
+  var pendingRoutes = null;
+  var pendingPoints = null;
 
   function ensureMap(style, center, zoom) {
     if (map) return;
@@ -79,41 +98,92 @@
       map.on("load", function () {
         styleLoaded = true;
         addRouteLayers();
-        if (pendingGeojson) { updateRoute(pendingGeojson); pendingGeojson = null; }
+        if (pendingRoutes || pendingPoints) {
+          updateData(pendingRoutes, pendingPoints);
+          pendingRoutes = pendingPoints = null;
+        }
         map.resize();
       });
     } catch (e) { showErr("MapLibre init failed: " + e); console.error(e); }
   }
 
+  // Route + marker layers, drawn above the basemap. Order (bottom->top): faint
+  // alternatives, the white halo under the focused route, the focused route
+  // (one line, or per-block `segment` features), then the O/D circle markers.
+  // Mirrors the folium build_route_layer parity.
   function addRouteLayers() {
     if (map.getSource("routes")) return;
-    map.addSource("routes", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-    // White casing (halo) under the coloured line; focused route thicker + opaque.
+    map.addSource("routes", { type: "geojson", data: EMPTY_FC });
+    map.addSource("points", { type: "geojson", data: EMPTY_FC });
+    var round = { "line-cap": "round", "line-join": "round" };
+    // Alternatives: dashed + faint, so the solid haloed focused route is unmistakable.
     map.addLayer({
-      id: "casing", type: "line", source: "routes",
-      layout: { "line-cap": "round", "line-join": "round" },
+      id: "r-alt", type: "line", source: "routes",
+      filter: ["==", ["get", "role"], "alt"],
+      layout: { "line-cap": "butt", "line-join": "round" },
       paint: {
-        "line-color": "#faf8f2",
-        "line-width": ["case", ["==", ["get", "role"], "focused"], 10, 7],
-        "line-opacity": ["case", ["==", ["get", "role"], "focused"], 1, 0.5],
+        "line-color": ["get", "color"], "line-width": 3, "line-opacity": 0.55,
+        "line-dasharray": [2, 2],
       },
     });
     map.addLayer({
-      id: "line", type: "line", source: "routes",
-      layout: { "line-cap": "round", "line-join": "round" },
+      id: "r-halo", type: "line", source: "routes",
+      filter: ["==", ["get", "role"], "halo"], layout: round,
+      paint: { "line-color": HALO, "line-width": 10 },
+    });
+    map.addLayer({
+      id: "r-line", type: "line", source: "routes",
+      filter: ["match", ["get", "role"], ["focused", "segment"], true, false], layout: round,
+      paint: { "line-color": ["get", "color"], "line-width": 6 },
+    });
+    // Block-boundary dots (segmented mode): small white pips so adjacent blocks read
+    // as distinct. Drawn under the larger O/D markers; no tooltip.
+    map.addLayer({
+      id: "r-joints", type: "circle", source: "points",
+      filter: ["==", ["get", "role"], "joint"],
       paint: {
-        "line-color": ["get", "color"],
-        "line-width": ["case", ["==", ["get", "role"], "focused"], 6, 4],
-        "line-opacity": ["case", ["==", ["get", "role"], "focused"], 1, 0.5],
+        "circle-radius": 3, "circle-color": HALO,
+        "circle-stroke-width": 1.5, "circle-stroke-color": INK, "circle-stroke-opacity": 0.55,
       },
+    });
+    map.addLayer({
+      id: "r-points", type: "circle", source: "points",
+      filter: ["match", ["get", "role"], ["origin", "dest"], true, false],
+      paint: {
+        "circle-radius": 7,
+        "circle-color": ["match", ["get", "role"], "origin", ACCENT, INK],
+        "circle-stroke-width": 3, "circle-stroke-color": HALO,
+      },
+    });
+    addTooltips();
+  }
+
+  // Hover tooltips (parity with folium PolyLine/CircleMarker tooltips): a single
+  // reusable popup showing the feature's `label` (walk score / street, Start/Dest).
+  function addTooltips() {
+    var popup = new maplibregl.Popup({
+      closeButton: false, closeOnClick: false, offset: 12, className: "hp-pop",
+    });
+    ["r-line", "r-alt", "r-points"].forEach(function (id) {
+      map.on("mousemove", id, function (e) {
+        var f = e.features && e.features[0];
+        if (!f || !f.properties || !f.properties.label) return;
+        map.getCanvas().style.cursor = "pointer";
+        var at = (id === "r-points") ? f.geometry.coordinates : e.lngLat;
+        popup.setLngLat(at).setText(f.properties.label).addTo(map);
+      });
+      map.on("mouseleave", id, function () {
+        map.getCanvas().style.cursor = "";
+        popup.remove();
+      });
     });
   }
 
-  function updateRoute(geojson) {
+  function updateData(geojson, points) {
     if (!map) return;
-    if (!styleLoaded) { pendingGeojson = geojson; return; }
-    var src = map.getSource("routes");
-    if (src) src.setData(geojson);
+    if (!styleLoaded) { pendingRoutes = geojson; pendingPoints = points; return; }
+    var rs = map.getSource("routes"); if (rs) rs.setData(geojson || EMPTY_FC);
+    var ps = map.getSource("points"); if (ps) ps.setData(points || EMPTY_FC);
   }
 
   function moveCamera(camera) {
@@ -133,7 +203,7 @@
     var h = args.height || 660;
     if (h !== lastHeight) { lastHeight = h; setFrameHeight(h); }
     ensureMap(args.style, args.center, args.zoom);
-    updateRoute(args.geojson || { type: "FeatureCollection", features: [] });
+    updateData(args.geojson || EMPTY_FC, args.points || EMPTY_FC);
     moveCamera(args.camera);
     if (map) map.resize();
   }
