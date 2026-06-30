@@ -22,6 +22,12 @@
   <div id="map"></div>
   <div id="err"></div>
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <!-- pmtiles protocol (B2.1b): lets MapLibre read a single .pmtiles via HTTP range
+       requests. main.js registers it with maplibregl.addProtocol when present. -->
+  <script src="https://unpkg.com/pmtiles@3.2.0/dist/pmtiles.js"></script>
+  <!-- Protomaps basemap theme (v4 schema) — UMD global `basemaps`; main.js calls
+       basemaps.layers(...) to build the full style when given a _protomaps marker. -->
+  <script src="https://unpkg.com/@protomaps/basemaps@5/dist/basemaps.js" crossorigin="anonymous"></script>
   <script src="./main.js"></script>
 </body>
 </html>

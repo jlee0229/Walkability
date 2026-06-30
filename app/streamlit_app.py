@@ -725,11 +725,50 @@ def camera_view(G, routes, focus):
 # main.js keeps a PERSISTENT map and updates layers/camera per rerun (no remount).
 # Basemap: OpenFreeMap for now (HUMANPATH_STYLE to switch); production = self-hosted
 # Protomaps PMTiles (B2.1b). MapLibre is CDN-loaded for now; vendor for production.
+_HUMANPATH_STYLE = os.environ.get("HUMANPATH_STYLE", "openfreemap").strip().lower()
+
+# B2.1b PMTiles validation: a public, CORS-open (access-control-allow-origin: *),
+# range-request-enabled Protomaps demo file (Florence). Proves the pmtiles://
+# protocol + HTTP range + CORS + GPU vector render work INSIDE our real-origin
+# component iframe — the make-or-break unknown. (The Protomaps demo *planet* is
+# origin-locked to maps.protomaps.com, so production needs a self-hosted Boston
+# .pmtiles; this only validates the mechanism.) Schema = the old Protomaps v2
+# layers in that file (landuse/roads/mask), per the MapLibre pmtiles example.
+_PMTILES_DEMO_URL = "pmtiles://https://pmtiles.io/protomaps(vector)ODbL_firenze.pmtiles"
+_PMTILES_DEMO_CENTER = [11.2558, 43.7696]  # Florence, [lon, lat]
+_PMTILES_DEMO_STYLE = {
+    "version": 8,
+    "sources": {
+        "demo": {
+            "type": "vector", "url": _PMTILES_DEMO_URL,
+            "attribution": '© <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
+        },
+    },
+    "layers": [
+        {"id": "bg", "type": "background", "paint": {"background-color": "#ece5d5"}},
+        {"id": "mask", "type": "fill", "source": "demo", "source-layer": "mask",
+         "paint": {"fill-color": "#faf8f2"}},
+        {"id": "buildings", "type": "fill", "source": "demo", "source-layer": "landuse",
+         "paint": {"fill-color": "#e3d8bd"}},
+        {"id": "roads", "type": "line", "source": "demo", "source-layer": "roads",
+         "paint": {"line-color": "#b1592e", "line-width": 1.0}},
+    ],
+}
+
+# Production basemap: self-hosted Boston Protomaps PMTiles (v4 schema) rendered with
+# the protomaps-themes-base theme (built in main.js via the `_protomaps` marker).
+# HUMANPATH_PMTILES_URL overrides the .pmtiles location (default = the local CORS+
+# range test server; production = the Cloudflare R2 public URL).
+_PMTILES_BOSTON_URL = os.environ.get(
+    "HUMANPATH_PMTILES_URL", "http://localhost:8000/boston.pmtiles").strip()
+_PMTILES_BOSTON_STYLE = {"_protomaps": {"url": "pmtiles://" + _PMTILES_BOSTON_URL, "flavor": "light"}}
+
 _MAPLIBRE_BASEMAP = {
     "demotiles": "https://demotiles.maplibre.org/style.json",
     "openfreemap": "https://tiles.openfreemap.org/styles/positron",
-}.get(os.environ.get("HUMANPATH_STYLE", "openfreemap").strip().lower(),
-      "https://tiles.openfreemap.org/styles/positron")
+    "pmtiles-demo": _PMTILES_DEMO_STYLE,
+    "pmtiles-boston": _PMTILES_BOSTON_STYLE,
+}.get(_HUMANPATH_STYLE, "https://tiles.openfreemap.org/styles/positron")
 
 _MAPLIBRE_COMPONENT = components.declare_component(
     "humanpath_maplibre",
@@ -803,10 +842,19 @@ if _MAP_BACKEND == "maplibre":
     # tweaking sliders. Fit route frames whichever route is currently focused.
     _committed = st.session_state.committed or {}
     _cam_token = f"{_committed.get('o')}|{_committed.get('d')}|{st.session_state.recenter_nonce}"
+    # Initial map view (used once, on first creation): the demo basemap is Florence,
+    # otherwise the loaded graph's centre. [lon, lat] for MapLibre.
+    if _HUMANPATH_STYLE == "pmtiles-demo":
+        _init_center, _init_zoom = _PMTILES_DEMO_CENTER, 13
+    else:
+        _gc = _graph_center(G)
+        _init_center, _init_zoom = [_gc[1], _gc[0]], _BASE_ZOOM
     _MAPLIBRE_COMPONENT(
         geojson=_gj,
         camera={"bounds": _bounds, "token": _cam_token, "animate": True},
         style=_MAPLIBRE_BASEMAP,
+        center=_init_center,
+        zoom=_init_zoom,
         height=660,
         key="maplibre_map",
         default=None,

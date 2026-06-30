@@ -26,13 +26,35 @@
   var errEl = document.getElementById("err");
   function showErr(msg) { errEl.style.display = "flex"; errEl.textContent = msg; }
 
+  // A `_protomaps` marker from Python -> a full MapLibre style built here from the
+  // Protomaps basemap theme (build-less; `basemaps` is the @protomaps/basemaps UMD
+  // global). Keeps the heavy ~100-layer theme out of the Python<->JS payload and
+  // lets it version-track the CDN. Pass-through for plain style URLs/objects.
+  function resolveStyle(style) {
+    if (!style || !style._protomaps) return style;
+    var pm = style._protomaps;
+    if (typeof basemaps === "undefined") { showErr("@protomaps/basemaps failed to load"); return style; }
+    return {
+      version: 8,
+      glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
+      sprite: "https://protomaps.github.io/basemaps-assets/sprites/v4/" + (pm.flavor || "light"),
+      sources: {
+        protomaps: {
+          type: "vector", url: pm.url,
+          attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>',
+        },
+      },
+      layers: basemaps.layers("protomaps", basemaps.namedFlavor(pm.flavor || "light"), { lang: "en" }),
+    };
+  }
+
   var map = null;
   var styleLoaded = false;
   var lastToken = null;
   var lastHeight = null;
   var pendingGeojson = null;
 
-  function ensureMap(style) {
+  function ensureMap(style, center, zoom) {
     if (map) return;
     if (typeof maplibregl === "undefined") { showErr("maplibregl failed to load"); return; }
     if (maplibregl.supported && !maplibregl.supported()) { showErr("WebGL not supported"); return; }
@@ -42,11 +64,18 @@
     }
     try {
       map = new maplibregl.Map({
-        container: "map", style: style,
-        center: [-71.06, 42.35], zoom: 12, attributionControl: true,
+        container: "map", style: resolveStyle(style),
+        center: center || [-71.06, 42.35], zoom: zoom || 12, attributionControl: true,
       });
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
       map.on("error", function (e) { console.error("[maplibre]", e && e.error); });
+      // Some Protomaps theme icons (e.g. "townhall") aren't in the published v4
+      // sprite; supply a transparent 1x1 placeholder so MapLibre doesn't warn and
+      // the rest of the POI renders cleanly. Robust against any sprite/theme drift.
+      map.on("styleimagemissing", function (e) {
+        if (map.hasImage(e.id)) return;
+        map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
+      });
       map.on("load", function () {
         styleLoaded = true;
         addRouteLayers();
@@ -103,7 +132,7 @@
     if (!args) return;
     var h = args.height || 660;
     if (h !== lastHeight) { lastHeight = h; setFrameHeight(h); }
-    ensureMap(args.style);
+    ensureMap(args.style, args.center, args.zoom);
     updateRoute(args.geojson || { type: "FeatureCollection", features: [] });
     moveCamera(args.camera);
     if (map) map.resize();
