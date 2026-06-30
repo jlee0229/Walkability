@@ -54,6 +54,9 @@ WALK_SPEED_MPS = 1.33  # ~average pedestrian pace, for walk-time estimates
 # map) or "maplibre" (the in-progress GPU vector spike — set HUMANPATH_MAP=maplibre).
 # Keeps the working folium map as a fallback while MapLibre is de-risked/built.
 _MAP_BACKEND = os.environ.get("HUMANPATH_MAP", "folium").strip().lower()
+# Verification hook: force the MapLibre component to report a fatal failure so the
+# graceful st_folium fallback can be exercised end-to-end. (HUMANPATH_MAP_FORCE_FAIL=1)
+_MAP_FORCE_FAIL = os.environ.get("HUMANPATH_MAP_FORCE_FAIL", "").strip() not in ("", "0", "false")
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +880,14 @@ _focus = st.session_state.focus
 _segmented = st.session_state.get(f"seg_{_focus}", False)
 _weights = st.session_state.active_weights
 
-if _MAP_BACKEND == "maplibre":
+# Graceful fallback: the MapLibre component reports a fatal client-side failure
+# (no WebGL, a lib failed to load, map init threw) back to Python via
+# setComponentValue; we latch it for the session and render the st_folium map
+# instead, so the app never goes blank. (Streamlit picks the backend server-side
+# before the component runs, so this round-trip is the only real fallback path.)
+_use_maplibre = _MAP_BACKEND == "maplibre" and not st.session_state.get("maplibre_failed")
+
+if _use_maplibre:
     # B2 GPU vector map (persistent component, no remount). The camera token changes
     # only on a new search, a focus switch, or Fit route, so the JS animates on
     # intent only and a plain rerun / manual pan leaves the view alone.
@@ -895,22 +905,29 @@ if _MAP_BACKEND == "maplibre":
     else:
         _gc = _graph_center(G)
         _init_center, _init_zoom = [_gc[1], _gc[0]], _BASE_ZOOM
-    _MAPLIBRE_COMPONENT(
+    _ml_val = _MAPLIBRE_COMPONENT(
         geojson=_gj,
         points=_points,
         camera={"bounds": _bounds, "token": _cam_token, "animate": True},
         style=_MAPLIBRE_BASEMAP,
         center=_init_center,
         zoom=_init_zoom,
+        forceFail=_MAP_FORCE_FAIL,
         height=660,
         key="maplibre_map",
         default=None,
     )
+    if isinstance(_ml_val, dict) and _ml_val.get("status") == "error":
+        # Component failed in the browser — latch and re-render with folium.
+        st.session_state.maplibre_failed = True
+        st.rerun()
 else:
     # Persistent base map (stable key → never remounts), routes as a swappable
     # FeatureGroup, and the camera moved via center/zoom. st_folium only setViews
     # when center/zoom change vs the last pass, so the camera eases to a route on a
     # search or focus switch but stays put on a segment toggle or a manual pan.
+    if _MAP_BACKEND == "maplibre" and st.session_state.get("maplibre_failed"):
+        st.warning("Interactive vector map unavailable — using the standard map.", icon="🗺️")
     base_map = build_base_map(G)
     route_layer = build_route_layer(G, routes, _focus, _weights, _segmented)
     cam_center, cam_zoom = camera_view(G, routes, _focus)

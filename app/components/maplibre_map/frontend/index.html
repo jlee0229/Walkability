@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- MapLibre from CDN for now; production can vendor these as committed static
-       files to drop the runtime CDN dependency. Served from a REAL origin here
-       (Streamlit's component server), not components.html's srcdoc iframe whose
-       null origin CORS-blocked tiles and broke line rendering. -->
-  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+  <!-- Vendored libs (committed under vendor/, shipped by Docker COPY . .) so the
+       deployed map has NO runtime CDN dependency. Pinned: maplibre-gl 4.7.1,
+       pmtiles 3.2.0, @protomaps/basemaps 5.7.2. Re-vendor by re-downloading from
+       the CDNs (see CLAUDE.md). Served from a REAL origin (Streamlit's component
+       server), not components.html's srcdoc iframe whose null origin CORS-blocked
+       tiles and broke line rendering. -->
+  <link href="./vendor/maplibre-gl.css" rel="stylesheet" />
   <style>
     html, body { margin: 0; height: 100%; background: #ece5d5; }
     #map { position: absolute; inset: 0; }
@@ -28,13 +30,13 @@
 <body>
   <div id="map"></div>
   <div id="err"></div>
-  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <script src="./vendor/maplibre-gl.js"></script>
   <!-- pmtiles protocol (B2.1b): lets MapLibre read a single .pmtiles via HTTP range
        requests. main.js registers it with maplibregl.addProtocol when present. -->
-  <script src="https://unpkg.com/pmtiles@3.2.0/dist/pmtiles.js"></script>
+  <script src="./vendor/pmtiles.js"></script>
   <!-- Protomaps basemap theme (v4 schema) — UMD global `basemaps`; main.js calls
        basemaps.layers(...) to build the full style when given a _protomaps marker. -->
-  <script src="https://unpkg.com/@protomaps/basemaps@5/dist/basemaps.js" crossorigin="anonymous"></script>
+  <script src="./vendor/basemaps.js"></script>
   <script src="./main.js"></script>
 </body>
 </html>

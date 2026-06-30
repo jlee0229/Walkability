@@ -25,9 +25,19 @@
   }
   function setFrameHeight(h) { send("streamlit:setFrameHeight", { height: h }); }
   function setComponentReady() { send("streamlit:componentReady", { apiVersion: 1 }); }
+  function setComponentValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
 
   var errEl = document.getElementById("err");
   function showErr(msg) { errEl.style.display = "flex"; errEl.textContent = msg; }
+
+  // Fatal failure (WebGL/lib/init): show the message AND report it to Python via
+  // setComponentValue so streamlit_app can fall back to the st_folium map. Reported
+  // once per page-load (the iframe persists across reruns) to avoid a rerun loop.
+  var reported = false;
+  function fail(reason) {
+    showErr(reason || "Map failed to load");
+    if (!reported) { reported = true; setComponentValue({ status: "error", reason: reason || "" }); }
+  }
 
   // A `_protomaps` marker from Python -> a full MapLibre style built here from the
   // Protomaps basemap theme (build-less; `basemaps` is the @protomaps/basemaps UMD
@@ -75,8 +85,8 @@
 
   function ensureMap(style, center, zoom) {
     if (map) return;
-    if (typeof maplibregl === "undefined") { showErr("maplibregl failed to load"); return; }
-    if (maplibregl.supported && !maplibregl.supported()) { showErr("WebGL not supported"); return; }
+    if (typeof maplibregl === "undefined") { fail("maplibregl failed to load"); return; }
+    if (maplibregl.supported && !maplibregl.supported()) { fail("WebGL not supported"); return; }
     // PMTiles protocol (B2.1b) — registered only if the pmtiles lib is present.
     if (typeof pmtiles !== "undefined" && maplibregl.addProtocol) {
       try { maplibregl.addProtocol("pmtiles", new pmtiles.Protocol().tile); } catch (e) {}
@@ -104,7 +114,7 @@
         }
         map.resize();
       });
-    } catch (e) { showErr("MapLibre init failed: " + e); console.error(e); }
+    } catch (e) { fail("MapLibre init failed: " + e); console.error(e); }
   }
 
   // Route + marker layers, drawn above the basemap. Order (bottom->top): faint
@@ -202,6 +212,9 @@
     if (!args) return;
     var h = args.height || 660;
     if (h !== lastHeight) { lastHeight = h; setFrameHeight(h); }
+    // Failure-injection hook to verify the Python-side folium fallback end-to-end
+    // (HUMANPATH_MAP_FORCE_FAIL). Exercises the real fail()->setComponentValue path.
+    if (args.forceFail && !reported) { fail("forced failure (HUMANPATH_MAP_FORCE_FAIL)"); return; }
     ensureMap(args.style, args.center, args.zoom);
     updateData(args.geojson || EMPTY_FC, args.points || EMPTY_FC);
     moveCamera(args.camera);
