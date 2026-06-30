@@ -259,24 +259,48 @@ def _edge_coords(G, u, v, key):
     return [(G.nodes[u]["y"], G.nodes[u]["x"]), (G.nodes[v]["y"], G.nodes[v]["x"])]
 
 
-# Nominatim, scoped to a Boston-area bounding box; cached so repeats are instant.
+# Geocoding, Boston-biased; cached so repeats are instant. Primary is **Photon**
+# (komoot) — OSM-based, no key, and tolerant of server/cloud use. Nominatim's public
+# server rate-limits/blocks shared cloud IPs (Streamlit Community Cloud), which used
+# to HANG the deployed app on "Reading the streets…" via a no-timeout osmnx fallback.
+# Photon primary + a timed Nominatim fallback fixes that; every call has a hard
+# timeout so geocoding can never spin forever (worst case → "couldn't find address").
+_PHOTON_URL = "https://photon.komoot.io/api"
+_PHOTON_BIAS = {"lat": 42.34, "lon": -71.09, "bbox": "-71.20,42.22,-70.98,42.43"}
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _BOSTON_VIEWBOX = "-71.20,42.43,-70.98,42.22"
 _GEO_HEADERS = {"User-Agent": "walkability-route-app/0.1 (educational project)"}
 
 
 @st.cache_data(show_spinner=False)
-def _nominatim_boston(q: str):
+def _geocode_query(q: str):
+    """(lat, lon) for a query; raises on total failure (so failures aren't cached)."""
     import requests
 
-    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": _BOSTON_VIEWBOX}
-    for bounded in (1, 0):
-        resp = requests.get(_NOMINATIM_URL, params={**base, "bounded": bounded},
+    # Primary: Photon (komoot). GeoJSON features; coords are [lon, lat].
+    try:
+        resp = requests.get(_PHOTON_URL, params={"q": q, "limit": 1, **_PHOTON_BIAS},
                             headers=_GEO_HEADERS, timeout=8)
         resp.raise_for_status()
-        data = resp.json()
-        if data:
-            return (float(data[0]["lat"]), float(data[0]["lon"]))
+        feats = resp.json().get("features") or []
+        if feats:
+            lon, lat = feats[0]["geometry"]["coordinates"][:2]
+            return (float(lat), float(lon))
+    except Exception:
+        pass
+
+    # Fallback: Nominatim (bounded to Boston, then unbounded), each call timed.
+    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": _BOSTON_VIEWBOX}
+    for bounded in (1, 0):
+        try:
+            resp = requests.get(_NOMINATIM_URL, params={**base, "bounded": bounded},
+                                headers=_GEO_HEADERS, timeout=8)
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                return (float(data[0]["lat"]), float(data[0]["lon"]))
+        except Exception:
+            continue
     raise ValueError(f"no geocoding result for {q!r}")
 
 
@@ -287,14 +311,9 @@ def geocode(query: str):
     if "boston" not in q.lower() and "," not in q:
         q = f"{q}, Boston, Massachusetts, USA"
     try:
-        return _nominatim_boston(q)
+        return _geocode_query(q)
     except Exception:
-        try:
-            import osmnx as ox
-            lat, lon = ox.geocode(q)
-            return (float(lat), float(lon))
-        except Exception:
-            return None
+        return None
 
 
 # ---------------------------------------------------------------------------
