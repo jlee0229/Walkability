@@ -50,13 +50,30 @@ ACCENT = "#b1592e"
 INK = "#211e18"
 WALK_SPEED_MPS = 1.33  # ~average pedestrian pace, for walk-time estimates
 
-# Map backend flag (B2 rollout): "folium" (default, the shipped st_folium raster
-# map) or "maplibre" (the in-progress GPU vector spike — set HUMANPATH_MAP=maplibre).
-# Keeps the working folium map as a fallback while MapLibre is de-risked/built.
-_MAP_BACKEND = os.environ.get("HUMANPATH_MAP", "folium").strip().lower()
+def _cfg(name, default=""):
+    """Deployment config from the environment OR Streamlit secrets, then default.
+
+    HF Spaces injects config as **environment variables**; Streamlit Community
+    Cloud exposes dashboard config as **st.secrets** (NOT os.environ). Check both
+    so the same code works on either host (env wins). st.secrets raises when no
+    secrets file exists (plain local runs) — swallow that and fall back.
+    """
+    v = os.environ.get(name)
+    if v is not None:
+        return v
+    try:
+        return str(st.secrets[name])
+    except Exception:
+        return default
+
+
+# Map backend (B2): "maplibre" (default — the GPU vector map) or "folium" (the
+# st_folium raster map, also the automatic fallback if MapLibre/WebGL fails in the
+# browser; see the maplibre_failed round-trip below). Override via HUMANPATH_MAP.
+_MAP_BACKEND = _cfg("HUMANPATH_MAP", "maplibre").strip().lower()
 # Verification hook: force the MapLibre component to report a fatal failure so the
 # graceful st_folium fallback can be exercised end-to-end. (HUMANPATH_MAP_FORCE_FAIL=1)
-_MAP_FORCE_FAIL = os.environ.get("HUMANPATH_MAP_FORCE_FAIL", "").strip() not in ("", "0", "false")
+_MAP_FORCE_FAIL = _cfg("HUMANPATH_MAP_FORCE_FAIL", "").strip() not in ("", "0", "false")
 
 
 # ---------------------------------------------------------------------------
@@ -728,7 +745,7 @@ def camera_view(G, routes, focus):
 # main.js keeps a PERSISTENT map and updates layers/camera per rerun (no remount).
 # Basemap: OpenFreeMap for now (HUMANPATH_STYLE to switch); production = self-hosted
 # Protomaps PMTiles (B2.1b). MapLibre is CDN-loaded for now; vendor for production.
-_HUMANPATH_STYLE = os.environ.get("HUMANPATH_STYLE", "openfreemap").strip().lower()
+_HUMANPATH_STYLE = _cfg("HUMANPATH_STYLE", "pmtiles-boston").strip().lower()
 
 # B2.1b PMTiles validation: a public, CORS-open (access-control-allow-origin: *),
 # range-request-enabled Protomaps demo file (Florence). Proves the pmtiles://
@@ -760,10 +777,11 @@ _PMTILES_DEMO_STYLE = {
 
 # Production basemap: self-hosted Boston Protomaps PMTiles (v4 schema) rendered with
 # the protomaps-themes-base theme (built in main.js via the `_protomaps` marker).
-# HUMANPATH_PMTILES_URL overrides the .pmtiles location (default = the local CORS+
-# range test server; production = the Cloudflare R2 public URL).
-_PMTILES_BOSTON_URL = os.environ.get(
-    "HUMANPATH_PMTILES_URL", "http://localhost:8000/boston.pmtiles").strip()
+# Default = the Cloudflare R2 public URL (range + open CORS), so deploy needs no
+# config; HUMANPATH_PMTILES_URL overrides it (e.g. a local CORS test server).
+_PMTILES_BOSTON_URL = _cfg(
+    "HUMANPATH_PMTILES_URL",
+    "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston.pmtiles").strip()
 _PMTILES_BOSTON_STYLE = {"_protomaps": {"url": "pmtiles://" + _PMTILES_BOSTON_URL, "flavor": "light"}}
 
 _MAPLIBRE_BASEMAP = {

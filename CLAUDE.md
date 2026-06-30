@@ -204,6 +204,30 @@ and the rest is injected CSS. `.claude/launch.json` has a `walkability-ui` confi
 in-IDE preview sandbox can't read `venv/`, so launch from a normal shell). Key
 behaviours, several of them hard-won — **don't regress**:
 
+- **Map backend (B2): MapLibre GL vector map is the default; st_folium is the
+  fallback.** `_MAP_BACKEND` (`HUMANPATH_MAP`, default `maplibre`) selects a custom
+  **build-less Streamlit component** (`app/components/maplibre_map/frontend/`,
+  served via `declare_component(path=)`) that renders routes on GPU vector tiles —
+  smooth zoom/pan + eased `fitBounds`, fixing the raster+Leaflet floor. The
+  component is **persistent** (hand-rolled postMessage handshake, no remount across
+  reruns); Python passes a route GeoJSON (`_route_geojson` → roles alt/halo/focused/
+  segment + O/D points) + an intent-only camera token (committed O/D + recenter
+  nonce, so manual pan / focus-switch / slider edits don't reframe). **Basemap** =
+  self-hosted **Protomaps PMTiles** Boston extract on **Cloudflare R2** (default
+  `_PMTILES_BOSTON_URL`; `pmtiles://` + HTTP range + open CORS), styled with
+  `@protomaps/basemaps@5` (v4 schema) brand-tinted in `main.js` `resolveStyle`.
+  Libs are **vendored** under `frontend/vendor/` (maplibre-gl 4.7.1, pmtiles 3.2.0,
+  @protomaps/basemaps 5.7.2 — no runtime CDN dep; glyphs/sprites stay on
+  protomaps.github.io). **Graceful fallback:** on a fatal client failure (no WebGL /
+  lib load / init throw) the component reports via `setComponentValue`; Python
+  latches `st.session_state.maplibre_failed` and re-renders the st_folium map with a
+  notice. `HUMANPATH_MAP_FORCE_FAIL=1` injects that failure to test the path. The
+  notebook/diagnostic folium maps are unaffected. **Config reads via `_cfg()` —
+  `os.environ` (HF Spaces) OR `st.secrets` (Streamlit Community Cloud, which does
+  NOT expose secrets as env vars), then the code default** — so the flipped defaults
+  mean a deploy needs **no** config at all. To re-vendor a lib, re-download it from
+  its CDN into `frontend/vendor/` and bump the pin in this note + index.html.
+
 - **Graph load once + download-on-startup** (`@st.cache_resource`, keyed by path).
   The graph files are too big for the repo, so `get_graph` fetches any missing file
   from a **GitHub Release** (`_GRAPH_RELEASE`, tag `data-v1`) via streaming `requests`
@@ -243,7 +267,10 @@ behaviours, several of them hard-won — **don't regress**:
   lowest-scoring block), and a **"Show N segments"** toggle: it lists each block's
   score **and** switches the focused route on the map to per-block colouring
   (`seg_{focus}` flag, read by `build_map`).
-- **st_folium camera — persistent base + dynamic layers (no remount).** The map
+- **st_folium camera — persistent base + dynamic layers (no remount).** *(This is
+  now the **fallback** map — see "Map backend (B2)" above; it renders when
+  `HUMANPATH_MAP=folium` or after a MapLibre client failure. The MapLibre component
+  reimplements this same camera/route behaviour on vector tiles.)* The map
   is split three ways so route loads feel natural instead of reloading the whole
   iframe: (1) `build_base_map` renders the **tiles-only** map **once** with a
   *constant* centre/zoom and a **stable `key="route_map"`** — st_folium hashes the
