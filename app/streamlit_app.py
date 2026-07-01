@@ -96,26 +96,33 @@ def inject_css() -> None:
         [data-testid="stAppViewContainer"] { background: #faf8f2; }
         h1, h2, h3 { font-family: 'Spectral', Georgia, serif; letter-spacing: -0.01em; }
 
-        /* Hide default Streamlit chrome for a cleaner app shell (but KEEP the
-           sidebar collapse/expand control so the rail can be reopened). */
-        /* Transparent header, but let clicks pass THROUGH it: it's an invisible
-           bar over the top of the page that otherwise eats pointer events on the
-           first content row (e.g. the top half of the "Fit route" button). The
-           toolbar/menu it would host are hidden, so nothing in it needs clicks. */
+        /* Hide default Streamlit chrome for a cleaner app shell. The header stays
+           transparent + click-through (it's an invisible bar over the top content
+           row that would otherwise eat pointer events on e.g. the top half of the
+           "Fit route" button). We KEEP the toolbar present (not display:none) so
+           the collapsed-rail REOPEN chevron — stExpandSidebarButton, which lives
+           in the toolbar — is available at every width; only the deploy button and
+           menu are suppressed, and only the expand chevron re-arms pointer events
+           (a child may set pointer-events:auto under a pointer-events:none
+           ancestor). */
         header[data-testid="stHeader"] { background: transparent; pointer-events: none; }
         #MainMenu, footer { visibility: hidden; }
-        [data-testid="stToolbar"] { display: none; }
+        [data-testid="stToolbar"] { pointer-events: none; }
+        [data-testid="stAppDeployButton"], [data-testid="stMainMenu"], [data-testid="stStatusWidget"] { display: none !important; }
+        [data-testid="stExpandSidebarButton"] { display: inline-flex !important; pointer-events: auto !important; }
         [data-testid="stMainBlockContainer"] { padding-top: 1.0rem; }
 
-        /* Left rail — fixed width and non-collapsible: hide the resize grip AND
-           the collapse/expand control so the horizontal dimensions never change. */
-        section[data-testid="stSidebar"] { width: 446px !important; min-width: 446px !important; background: #f6f1e6; border-right: 1px solid var(--line); }
+        /* Left rail — fixed 446px width and non-resizable, but COLLAPSIBLE at
+           every viewport size (close/open toggle always available). The 446px
+           pin is scoped to the OPEN rail (aria-expanded="true") only: forcing the
+           width with !important on the collapsed state fought Streamlit's own
+           collapse transform and left the rail half-shown at some widths. */
+        section[data-testid="stSidebar"] { background: #f6f1e6; border-right: 1px solid var(--line); }
+        section[data-testid="stSidebar"][aria-expanded="true"] { width: 446px !important; min-width: 446px !important; }
         [data-testid="stSidebarResizeHandle"], [data-testid="stSidebarResizer"] { display: none !important; }
-        [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] { display: none !important; }
-        /* The sidebar header reserved space for the (now hidden) collapse button —
-           remove it and trim the content padding so the rail starts at the top. */
-        [data-testid="stSidebarHeader"] { display: none !important; height: 0 !important; padding: 0 !important; }
-        section[data-testid="stSidebar"] > div { padding-top: 0.4rem; }
+        /* Keep a slim header strip so the collapse chevron is always reachable. */
+        [data-testid="stSidebarHeader"] { padding: 0.2rem 0.5rem 0 !important; min-height: 0 !important; }
+        [data-testid="stSidebarCollapseButton"] { display: inline-flex !important; }
         [data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
         /* Right-align the mi/km units toggle to the rail's right edge */
         section[data-testid="stSidebar"] [data-testid="stSegmentedControl"] { justify-content: flex-end; }
@@ -178,6 +185,25 @@ def inject_css() -> None:
         [data-testid="stMain"] { overflow: hidden; }
         [data-testid="stMain"]::-webkit-scrollbar { width:0; height:0; }
         .fp-card:not(.best) { cursor: default; }
+
+        /* ── Mobile / small-viewport (esp. landscape phones) ──────────────────
+           The collapse/reopen toggle is handled above at ALL widths, so this
+           block only narrows the OPEN rail (a fixed 446px leaves almost no room
+           for the map on a ~700–930px landscape phone) and tightens type/inputs.
+           The width is scoped to aria-expanded="true" for the same reason as the
+           desktop rule — never force a width on the collapsed rail. */
+        @media (max-width: 932px) {
+            section[data-testid="stSidebar"][aria-expanded="true"] {
+                width: 300px !important; min-width: 260px !important; max-width: 70vw !important;
+            }
+            /* Tighten oversized display type so the narrower rail isn't cramped */
+            .fp-title { font-size: 30px; }
+            .fp-score { font-size: 30px; }
+            /* iOS Safari auto-zooms the whole page when a focused input is under
+               16px. The desktop inputs are 14.5px → tapping the address field
+               zooms in jarringly. Force 16px on small screens to suppress it. */
+            [data-testid="stTextInput"] input { font-size: 16px !important; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -510,6 +536,10 @@ if find:
         st.session_state.committed = params
         st.session_state.active_weights = weights  # freeze rendering to the committed weights
         st.session_state.focus = 0
+        # On small screens, collapse the rail after a search so the map (the
+        # payload) gets the screen. Consumed once at the end of the run; the JS
+        # is itself viewport-gated, so desktop is never affected.
+        st.session_state._collapse_rail_mobile = True
 
 routes = st.session_state.routes
 
@@ -981,3 +1011,81 @@ else:
     st_folium(base_map, key="route_map", height=660, use_container_width=True,
               returned_objects=[], center=cam_center, zoom=cam_zoom,
               feature_group_to_add=route_layer)
+    # Mobile: fill the viewport for the folium FALLBACK the same way the MapLibre
+    # component fills itself (see main.js computeHeight). st_folium's height is a
+    # fixed 660px Python arg we can't make viewport-aware server-side, so a small
+    # mobile-only helper resizes its (same-origin) iframe from its top edge to the
+    # bottom of the visible viewport and nudges Leaflet to reflow. Desktop (>932px)
+    # is untouched; re-applied each run since st_folium re-asserts 660 on rerun.
+    components.html(
+        """
+        <script>
+        (function () {
+          function fill() {
+            try {
+              var pw = window.parent;
+              var f = pw.document.querySelector('iframe[title="st_folium"]');
+              if (!f) return;
+              var vh = (pw.visualViewport && pw.visualViewport.height) || pw.innerHeight;
+              var top = Math.max(0, f.getBoundingClientRect().top);
+              var h = Math.max(360, Math.floor(vh - top - 4));
+              f.style.setProperty("height", h + "px", "important");
+              // Same-origin (/component/) → reach in, stretch the map div, reflow.
+              var idoc = f.contentDocument;
+              if (idoc) {
+                var m = idoc.querySelector(".folium-map, .leaflet-container");
+                if (m) m.style.height = "100%";
+              }
+              if (f.contentWindow) f.contentWindow.dispatchEvent(new Event("resize"));
+            } catch (e) { /* cross-origin/missing: give up quietly */ }
+          }
+          // Re-apply for ~2s so it survives st_folium re-asserting 660px on rerun.
+          var n = 0;
+          var t = setInterval(function () {
+            n++;
+            var pw = window.parent;
+            if (n > 20 || (pw && pw.innerWidth > 932)) { clearInterval(t); return; }
+            fill();
+          }, 100);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mobile: collapse the rail once, right after a search (#2). Emitted only on the
+# run where a search just succeeded, so it fires once per search and not on focus
+# switches / slider edits. The script runs in a 0-height component iframe and
+# reaches into the parent document to click the rail's collapse button — but only
+# when the PARENT viewport is small, so desktop behaviour is untouched.
+# ---------------------------------------------------------------------------
+if st.session_state.pop("_collapse_rail_mobile", False):
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            var pw = window.parent;
+            if (!pw || pw.innerWidth > 932) return;   // desktop: do nothing
+            // The parent DOM may still be settling after the rerun; retry briefly.
+            var tries = 0;
+            var tick = setInterval(function () {
+              tries++;
+              var doc = pw.document;
+              var el = doc.querySelector('[data-testid="stSidebarCollapseButton"]');
+              if (el) {
+                var btn = el.tagName === 'BUTTON' ? el : el.querySelector('button');
+                (btn || el).click();
+                clearInterval(tick);
+              } else if (tries > 20) {
+                clearInterval(tick);
+              }
+            }, 100);
+          } catch (e) { /* cross-origin or missing: leave the rail open */ }
+        })();
+        </script>
+        """,
+        height=0,
+    )
