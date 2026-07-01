@@ -299,10 +299,23 @@ behaviours, several of them hard-won — **don't regress**:
   st_folium's iframe** (and disabling native zoom alongside it left the map
   un-zoomable), so it was reverted — don't re-add it without confirming it actually
   runs in the component.
-- **CSS gotchas:** the rail is **fixed-width and non-collapsible** — both the
-  resize handle (`stSidebarResizeHandle`) and the collapse/expand control
-  (`stSidebarCollapseButton` / `stSidebarCollapsedControl`) are hidden, so the
-  horizontal dimensions never change. The main area's overflow is locked so the map
+- **CSS gotchas:** the rail is **fixed-width (446px) and non-resizable but
+  collapsible at every viewport width.** The resize handle
+  (`stSidebarResizeHandle`) stays hidden, but the **collapse chevron**
+  (`stSidebarCollapseButton`, in a slim always-visible `stSidebarHeader` strip)
+  and the **reopen chevron** (`stExpandSidebarButton`, in the top toolbar — the
+  1.58 test-id; the older `stSidebarCollapsedControl`/`collapsedControl` don't
+  exist in 1.58) are kept so the user can tuck the rail away at any size. The
+  toolbar is therefore **not** `display:none` (only the deploy button + menu are
+  suppressed); the header is click-through except the expand chevron, which
+  re-arms `pointer-events:auto`. **The 446px width `!important` is scoped to the
+  OPEN rail (`section[data-testid="stSidebar"][aria-expanded="true"]`)** — forcing
+  a width on the *collapsed* state fought Streamlit's own collapse transform and
+  left the rail half-shown at some widths. A **`@media (max-width:932px)`** block
+  narrows the open rail (300px, min 260, max 70vw), tightens display type, and
+  bumps text inputs to 16px (kills iOS focus-zoom); on a successful search a
+  one-shot mobile-only JS collapses the rail so the map gets the screen (see the
+  `_collapse_rail_mobile` flag). The main area's overflow is locked so the map
   doesn't spawn a page scrollbar.
 
 ### What's not yet implemented

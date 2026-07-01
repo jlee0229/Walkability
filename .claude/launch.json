@@ -6,6 +6,12 @@
       "runtimeExecutable": "venv/bin/streamlit",
       "runtimeArgs": ["run", "app/streamlit_app.py", "--server.headless", "true"],
       "port": 8501
+    },
+    {
+      "name": "walkability-preview",
+      "runtimeExecutable": "venv/bin/streamlit",
+      "runtimeArgs": ["run", "app/streamlit_app.py", "--server.headless", "true", "--server.port", "8502"],
+      "port": 8502
     }
   ]
 }

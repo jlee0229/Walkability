@@ -80,8 +80,49 @@
   var styleLoaded = false;
   var lastToken = null;
   var lastHeight = null;
+  var lastBounds = null;   // most recent fitBounds target, for re-fit after a resize
   var pendingRoutes = null;
   var pendingPoints = null;
+
+  // Iframe height. On desktop (>932px) we keep the Python-supplied 660 so that
+  // view is unchanged. On small screens we fill from THIS iframe's top edge down
+  // to the bottom of the VISIBLE viewport, so the map is exactly the visible area
+  // and fitBounds frames the route on the SCREEN's centre — not the centre of a
+  // 660px box, and not a guessed `innerHeight - 8` that ignores the top chrome
+  // (rail toolbar + block padding) and leaves the route sitting low.
+  var argHeight = 660;   // last Python-supplied fallback height
+  function computeHeight(fallback) {
+    try {
+      var pw = window.parent;
+      if (pw && pw.innerWidth <= 932) {
+        // visualViewport tracks the iOS URL bar; fall back to innerHeight.
+        var vh = (pw.visualViewport && pw.visualViewport.height) || pw.innerHeight;
+        var top = 0;
+        var fe = window.frameElement;   // same-origin component iframe → readable
+        if (fe && fe.getBoundingClientRect) top = Math.max(0, fe.getBoundingClientRect().top);
+        return Math.max(360, Math.floor(vh - top - 4));
+      }
+    } catch (e) { /* cross-origin: fall back */ }
+    return fallback;
+  }
+
+  // Re-apply the height when the viewport changes (iOS URL bar show/hide, rotate).
+  // The h !== lastHeight guard makes this a no-op on plain pans/zooms, so it never
+  // fights a manual camera move; only a genuine size change re-fits the route.
+  function reflowHeight() {
+    var h = computeHeight(argHeight);
+    if (h !== lastHeight) {
+      lastHeight = h;
+      setFrameHeight(h);
+      setTimeout(function () {
+        if (!map) return;
+        map.resize();
+        if (lastBounds) map.fitBounds(lastBounds, { padding: 48, duration: 0 });
+      }, 120);
+    } else if (map) {
+      map.resize();
+    }
+  }
 
   function ensureMap(style, center, zoom) {
     if (map) return;
@@ -200,6 +241,7 @@
     if (!map || !camera || !camera.bounds) return;
     if (camera.token === lastToken) return;  // only on intent (new trip / Fit route)
     lastToken = camera.token;
+    lastBounds = camera.bounds;
     var dur = camera.animate ? 800 : 0;
     var fit = function () {
       map.stop();  // cancel any in-flight animation to avoid stacking glitches
@@ -210,15 +252,30 @@
 
   function onRender(args) {
     if (!args) return;
-    var h = args.height || 660;
-    if (h !== lastHeight) { lastHeight = h; setFrameHeight(h); }
+    argHeight = args.height || 660;
+    var h = computeHeight(argHeight);
+    var heightChanged = (h !== lastHeight);
+    if (heightChanged) { lastHeight = h; setFrameHeight(h); }
     // Failure-injection hook to verify the Python-side folium fallback end-to-end
     // (HUMANPATH_MAP_FORCE_FAIL). Exercises the real fail()->setComponentValue path.
     if (args.forceFail && !reported) { fail("forced failure (HUMANPATH_MAP_FORCE_FAIL)"); return; }
     ensureMap(args.style, args.center, args.zoom);
     updateData(args.geojson || EMPTY_FC, args.points || EMPTY_FC);
     moveCamera(args.camera);
-    if (map) map.resize();
+    if (map) {
+      map.resize();
+      // setFrameHeight is async — the iframe resizes a tick later. When the height
+      // actually changes (mobile first paint / rotation), wait for the new size,
+      // then resize + re-fit so the route framing matches the final viewport
+      // rather than the stale 660px box.
+      if (heightChanged && lastBounds) {
+        setTimeout(function () {
+          if (!map) return;
+          map.resize();
+          map.fitBounds(lastBounds, { padding: 48, duration: 0 });
+        }, 220);
+      }
+    }
   }
 
   var gotRender = false;
@@ -228,10 +285,17 @@
       try { onRender(e.data.args); } catch (err) { console.error(err); }
     }
   });
-  window.addEventListener("resize", function () { if (map) map.resize(); });
+  window.addEventListener("resize", reflowHeight);
+  // The iframe's own resize doesn't fire when only the parent's visual viewport
+  // changes (iOS URL bar) — listen there too so the map re-fills and re-centres.
+  try {
+    if (window.parent && window.parent.visualViewport) {
+      window.parent.visualViewport.addEventListener("resize", reflowHeight);
+    }
+  } catch (e) { /* cross-origin: skip */ }
 
   setComponentReady();
-  setFrameHeight(660);
+  setFrameHeight(computeHeight(660));
   // Diagnostic: if Streamlit never sends a render, the handshake is wrong.
   setTimeout(function () {
     if (!gotRender) showErr("No render from Streamlit yet (handshake?). Check console.");
