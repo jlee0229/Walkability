@@ -303,6 +303,13 @@ EYES_POI_SAT:          float = 3.0    # ~3 foot-traffic POIs ≈ a lively block
 EYES_BLDG_SAT:         float = 7.0    # ~7 buildings ≈ a built-up block
 OPENSPACE_MIN_AREA_M2: float = 5000.0 # ignore pocket parks/playgrounds; keep real open space
 OPENNESS_REACH_M:      float = 50.0   # openness ramps 1 (adjacent) → 0 at this distance
+# Cemeteries ARE large open space — they give the same sightlines / separation /
+# quiet that read as safe (a route hugging Walnut Hills Cemetery on Grove St was
+# scoring as a bare car-oriented street). But they are less *pleasant* than a park:
+# no through foot-traffic, few "eyes", a somber character. So a cemetery's openness
+# contribution is discounted by this factor vs a park/water edge. Discount, not
+# exclude — the openness/safety benefit is real, the amenity value is not.
+CEMETERY_OPENNESS_FACTOR: float = 0.6
 
 # Safety CEILINGS — the "level" fix (2026-06-25 calibration). Calm, watched
 # streets were saturating at safety ~1.0 (car_safety = 1.0 wherever no arterial is

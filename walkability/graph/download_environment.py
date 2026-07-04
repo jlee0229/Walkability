@@ -11,7 +11,9 @@ ships the baked ``environment_score``):
     classes a pedestrian feels most. Used for arterial-proximity.
   * boston_buildings.gpkg — building footprints (built enclosure / "eyes").
   * boston_pois.gpkg       — shop + amenity points (active frontage / "eyes").
-  * boston_openspace.gpkg  — large parks + water (openness / sightlines).
+  * boston_openspace.gpkg  — large parks + water + cemeteries (openness /
+    sightlines). Cemeteries are tagged kind="cemetery" so their openness is
+    discounted vs parks (see CEMETERY_OPENNESS_FACTOR).
   * boston_landuse.gpkg    — landuse=industrial polygons (truck-corridor
     down-weight of car-safety + warehouse enclosure discount).
   * boston_roads.gpkg      — ALL car-carrying road classes, for the distance-to-
@@ -33,7 +35,7 @@ import math
 import geopandas as gpd
 import osmnx as ox
 
-from walkability.config import CACHE_DIR
+from walkability.config import CACHE_DIR, PLACES
 from walkability.graph.environment import (
     ARTERIALS_PATH,
     BUILDINGS_PATH,
@@ -54,7 +56,11 @@ OPENSPACE_LEISURE = ["park", "garden", "nature_reserve", "recreation_ground",
 ox.settings.cache_folder = str(CACHE_DIR)
 ox.settings.use_cache = True
 
-PLACE = "Boston, Massachusetts, USA"
+# Must cover the SAME extent as the walk graph (config.PLACES = Boston + Brookline).
+# If these feature layers stayed Boston-only while the graph widened, every
+# Brookline (and border-Boston) edge would silently get environment_score/safety
+# = 0 — see verify_system.py::check_data_source_seam assertion (a).
+PLACE = PLACES
 
 
 def _save(gdf: gpd.GeoDataFrame, path) -> None:
@@ -130,16 +136,30 @@ def download_pois(force: bool = False) -> None:
     _save(gdf, POIS_PATH)
 
 
+def _openspace_kind(natural, landuse, amenity) -> str:
+    """Classify an open-space polygon → water / cemetery / park. Cemeteries are
+    kept separate so environment.py can DISCOUNT their openness (real sightlines /
+    separation, but less pleasant than a park — see CEMETERY_OPENNESS_FACTOR)."""
+    if str(natural) == "water":
+        return "water"
+    if str(landuse) == "cemetery" or str(amenity) == "grave_yard":
+        return "cemetery"
+    return "park"
+
+
 def download_openspace(force: bool = False) -> None:
     if OPENSPACE_PATH.exists() and not force:
         print(f"Open space already cached at {OPENSPACE_PATH.name} (use --force).")
         return
-    print("Fetching open space (water + parks) ...")
+    print("Fetching open space (water + parks + cemeteries) ...")
     gdf = ox.features_from_place(
-        PLACE, tags={"natural": "water", "leisure": OPENSPACE_LEISURE})
+        PLACE, tags={"natural": "water", "leisure": OPENSPACE_LEISURE,
+                     "landuse": "cemetery", "amenity": "grave_yard"})
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
-    gdf["kind"] = ["water" if str(n) == "water" else "park"
-                   for n in (gdf["natural"] if "natural" in gdf.columns else [None] * len(gdf))]
+    cols = {c: (gdf[c] if c in gdf.columns else [None] * len(gdf))
+            for c in ("natural", "landuse", "amenity")}
+    gdf["kind"] = [_openspace_kind(n, l, a)
+                   for n, l, a in zip(cols["natural"], cols["landuse"], cols["amenity"])]
     _save(gdf[["geometry", "kind"]], OPENSPACE_PATH)
 
 

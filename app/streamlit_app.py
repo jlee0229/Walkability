@@ -828,9 +828,12 @@ _PMTILES_DEMO_STYLE = {
 # the protomaps-themes-base theme (built in main.js via the `_protomaps` marker).
 # Default = the Cloudflare R2 public URL (range + open CORS), so deploy needs no
 # config; HUMANPATH_PMTILES_URL overrides it (e.g. a local CORS test server).
+# boston_metro.pmtiles (2026-07-04) widens the cut to the metro-hull PLACES
+# (adds Cambridge/Somerville/Everett/Chelsea + all of East Boston); the old
+# boston.pmtiles object stays in R2 so pre-hull deploys keep rendering.
 _PMTILES_BOSTON_URL = _cfg(
     "HUMANPATH_PMTILES_URL",
-    "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston.pmtiles").strip()
+    "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston_metro.pmtiles").strip()
 _PMTILES_BOSTON_STYLE = {"_protomaps": {"url": "pmtiles://" + _PMTILES_BOSTON_URL, "flavor": "light"}}
 
 _MAPLIBRE_BASEMAP = {

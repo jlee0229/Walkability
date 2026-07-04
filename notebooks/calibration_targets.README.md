@@ -68,6 +68,15 @@ headroom (jamaica_pond 91, back_bay/comm_mall 89) and the car-shared cluster sit
 lower; the residual is a small upward bias plus the accepted Seaport openness
 undershoot (70 vs 80).
 
+**2026-07-04 refresh** — same scoring code, regenerated against the
+**metro-hull** graph (89,415 nodes; Boston + Brookline + Cambridge/Somerville/
+Everett/Chelsea, `--force` rebuilt today; the re-anchor levers were first baked
+by the 2026-07-03 Brookline rebuild). Only one route moved vs the 06-28
+snapshot: `dorchester_to_downtown` 74 → 75 (same length — score shift, not a
+corridor change); the hull towns themselves moved **zero** of the 30 routes.
+Fit vs `ideal_score`: **MAE ≈ 2.30, bias ≈ +0.3** over 30 routes.
+`calibration_survey.html` regenerated the same day.
+
 ## Extending / re-running
 Append new routes by adding them to `SURVEY_ROUTES` (calibration_survey.py) and
 regenerating the `model_*` columns. To refresh the reference values after a scoring

@@ -48,6 +48,7 @@ from walkability.config import OSM_DIR
 from walkability.scoring.weights import (
     ARTERIAL_REACH_M,
     CAR_SAFETY_CEIL,
+    CEMETERY_OPENNESS_FACTOR,
     DEFAULT_MAXSPEED_MPH,
     EYES_CEIL,
     ENV_CONFIDENCE,
@@ -161,9 +162,11 @@ def load_pois() -> gpd.GeoDataFrame:
 
 
 def load_openspace() -> gpd.GeoDataFrame:
-    """Cached large open-space polygons (parks + water ≥ OPENSPACE_MIN_AREA_M2),
-    in METRIC_CRS. Small pocket parks/playgrounds are dropped — only meaningful
-    open space gives the openness/sightlines that read as safe."""
+    """Cached large open-space polygons (parks + water + cemeteries ≥
+    OPENSPACE_MIN_AREA_M2), in METRIC_CRS. Small pocket parks/playgrounds are
+    dropped — only meaningful open space gives the openness/sightlines that read
+    as safe. The ``kind`` column (water/park/cemetery) lets ``_openness_scores``
+    discount cemeteries (see CEMETERY_OPENNESS_FACTOR)."""
     gdf = gpd.read_file(OPENSPACE_PATH).to_crs(METRIC_CRS)
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     gdf = gdf[gdf.geometry.area >= OPENSPACE_MIN_AREA_M2]
@@ -420,12 +423,12 @@ def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     return index
 
 
-def _openness_scores(
+def _nearest_openness(
     edges_metric: gpd.GeoDataFrame,
     openspace:    gpd.GeoDataFrame,
 ) -> dict[tuple, float]:
-    """Per-edge openness: 1 adjacent to a large open space, ramping to 0 at
-    OPENNESS_REACH_M (one nearest-open-space join)."""
+    """Per-edge openness against one open-space subset: 1 adjacent, ramping to 0
+    at OPENNESS_REACH_M (one nearest-open-space join)."""
     if openspace.empty:
         return {}
     joined = gpd.sjoin_nearest(
@@ -441,6 +444,32 @@ def _openness_scores(
             scores[eid] = 0.0
         else:
             scores[eid] = max(0.0, 1.0 - float(dist) / OPENNESS_REACH_M)
+    return scores
+
+
+def _openness_scores(
+    edges_metric: gpd.GeoDataFrame,
+    openspace:    gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge openness from the nearest large open space.
+
+    Cemeteries count as open space (real sightlines / traffic separation) but are
+    less pleasant than a park, so their openness is DISCOUNTED by
+    CEMETERY_OPENNESS_FACTOR. Park/water and cemetery openness are computed
+    separately and the stronger (post-discount) signal wins per edge — so a nearer
+    cemetery never masks an almost-as-close park, and an edge beside only a cemetery
+    (Grove St / Walnut Hills) still gets a real, if discounted, openness lift."""
+    if openspace.empty:
+        return {}
+    kind = openspace["kind"].astype("string") if "kind" in openspace.columns else None
+    if kind is None or not (kind == "cemetery").any():
+        return _nearest_openness(edges_metric, openspace)
+
+    parks = _nearest_openness(edges_metric, openspace[kind != "cemetery"])
+    cems  = _nearest_openness(edges_metric, openspace[kind == "cemetery"])
+    scores = dict(parks)
+    for eid, val in cems.items():
+        scores[eid] = max(scores.get(eid, 0.0), CEMETERY_OPENNESS_FACTOR * val)
     return scores
 
 
