@@ -245,9 +245,13 @@ behaviours, several of them hard-won — **don't regress**:
   widget renders (default `full`).
 - **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
   fought st_folium reruns and added clutter). Origin/destination are addresses,
-  geocoded by `geocode()` → **Nominatim scoped to a Boston bounding box**
-  (`bounded=1`, then the box as a soft bias), wrapped in `@st.cache_data`;
-  `osmnx.geocode` is the unbounded fallback.
+  geocoded by `geocode()`, Boston-biased and `@st.cache_data`-wrapped. **Primary is
+  Photon** (komoot — OSM-based, no key, tolerant of server/cloud use); **Nominatim is
+  a timed fallback**. Nominatim's public server rate-limits/blocks shared cloud IPs
+  (Streamlit Community Cloud), which used to **hang** the deployed app on "Reading the
+  streets…" via a no-timeout `osmnx.geocode` fallback — that fallback was removed and
+  every call now has a hard timeout, so geocoding can never spin forever (worst case →
+  "couldn't find that address").
 - **`alpha` + per-factor weight sliders.** The 0–100 "how you'll walk" slider maps
   to `alpha = slider/100·5`. Weights thread through `find_routes` → `edge_cost`/
   `_build_route` → `edge_walkability`; untouched, the `FACTOR_WEIGHTS` object itself
@@ -264,44 +268,102 @@ behaviours, several of them hard-won — **don't regress**:
   setting `st.session_state.focus`, **no `st.rerun`**) emphasises that route; all
   routes are drawn at search time so switching focus is a single rerun with the view
   preserved. By default the focused route is a **single smooth line** (halo + one
-  colour from its overall walk_score). A per-route **Details** expander reveals
-  confidence, the **weakest stretch** (its distance from the start), and a
-  **"Show N segments"** toggle that lists each block's score and switches the
-  focused route on the map to per-block colouring (`seg_{focus}` flag).
-- **st_folium camera (fallback map only).** Renders when `HUMANPATH_MAP=folium` or
-  after a MapLibre client failure; the MapLibre component reimplements the same
-  camera/route behaviour on vector tiles. The map is split into a tiles-only base
-  (stable `key="route_map"` so the iframe never remounts), a routes+markers
-  `FeatureGroup` layer, and a `center`/`zoom` camera pass that only moves the view
-  on a search/focus switch, not on a segment toggle or manual pan. **st_folium has
-  no animated `flyTo`** (only `setView`), so transitions are an instant/short-pan —
-  an eased flyTo would need a custom component. Native Leaflet wheel zoom is used
-  with `zoom_snap=0` + `wheel_px_per_zoom_level=40`; the Leaflet.SmoothWheelZoom
-  plugin does not execute inside st_folium's iframe and was reverted.
-- **CSS gotchas:** the rail is **fixed-width and non-collapsible** — both the
-  resize handle (`stSidebarResizeHandle`) and the collapse/expand control
-  (`stSidebarCollapseButton` / `stSidebarCollapsedControl`) are hidden, so the
-  horizontal dimensions never change. The main area's overflow is locked so the map
+  colour from its overall walk_score), like the faint alternatives. A per-route
+  **Details** expander reveals confidence, the **weakest stretch** (its distance
+  from the start, via `route_details` returning the cumulative offset to the
+  lowest-scoring block), and a **"Show N segments"** toggle: it lists each block's
+  score **and** switches the focused route on the map to per-block colouring
+  (`seg_{focus}` flag, read by `build_map`).
+- **st_folium camera — persistent base + dynamic layers (no remount).** *(This is
+  now the **fallback** map — see "Map backend (B2)" above; it renders when
+  `HUMANPATH_MAP=folium` or after a MapLibre client failure. The MapLibre component
+  reimplements this same camera/route behaviour on vector tiles.)* The map
+  is split three ways so route loads feel natural instead of reloading the whole
+  iframe: (1) `build_base_map` renders the **tiles-only** map **once** with a
+  *constant* centre/zoom and a **stable `key="route_map"`** — st_folium hashes the
+  generated Leaflet JS (`generate_js_hash` strips folium's random `_<hash>` var
+  suffixes), so a stable JS → stable hash → the iframe is **never remounted** (no
+  white flash, no tile reload). (2) Routes + O/D markers are a **`FeatureGroup`**
+  passed via `feature_group_to_add`, which swaps just that layer on the live map.
+  (3) The camera is moved by passing **`center`/`zoom`** (from `camera_view` →
+  `_bounds_to_view`, the Web-Mercator `getBoundsZoom` fit). st_folium's frontend
+  `setView`s **only when center/zoom change vs the last pass** (it compares
+  `JSON.stringify(center)` and `zoom !== last_zoom`), so the camera eases to a
+  route on a **search or focus switch** but stays put on a **segment toggle, a
+  slider/address edit, or a manual pan**. `returned_objects=[]` keeps it one-way
+  (no round-trip rerun). **st_folium has no animated `flyTo`** (its bundle only
+  calls `setView`), so transitions are an instant/short-pan, not a Mapbox-style
+  arc — a true eased flyTo would need a custom Leaflet/MapLibre component (the
+  considered "Option B"). Region switch changes `_graph_center` → base JS changes
+  → hash changes → an intentional remount onto the new area.
+- **Wheel zoom.** Native Leaflet zoom with `zoom_snap=0` (fractional) +
+  `wheel_px_per_zoom_level=40` (brisk). The **Leaflet.SmoothWheelZoom** plugin was
+  tried for Google-Maps-style continuous zoom but **does not execute inside
+  st_folium's iframe** (and disabling native zoom alongside it left the map
+  un-zoomable), so it was reverted — don't re-add it without confirming it actually
+  runs in the component.
+- **CSS gotchas:** the rail is **fixed-width (446px) and non-resizable but
+  collapsible at every viewport width.** The resize handle
+  (`stSidebarResizeHandle`) stays hidden, but the **collapse chevron**
+  (`stSidebarCollapseButton`, in a slim always-visible `stSidebarHeader` strip)
+  and the **reopen chevron** (`stExpandSidebarButton`, in the top toolbar — the
+  1.58 test-id; the older `stSidebarCollapsedControl`/`collapsedControl` don't
+  exist in 1.58) are kept so the user can tuck the rail away at any size. The
+  toolbar is therefore **not** `display:none` (only the deploy button + menu are
+  suppressed); the header is click-through except the expand chevron, which
+  re-arms `pointer-events:auto`. **The 446px width `!important` is scoped to the
+  OPEN rail (`section[data-testid="stSidebar"][aria-expanded="true"]`)** — forcing
+  a width on the *collapsed* state fought Streamlit's own collapse transform and
+  left the rail half-shown at some widths. A **`@media (max-width:932px)`** block
+  narrows the open rail (300px, min 260, max 70vw), tightens display type, and
+  bumps text inputs to 16px (kills iOS focus-zoom); on a successful search a
+  one-shot mobile-only JS collapses the rail so the map gets the screen (see the
+  `_collapse_rail_mobile` flag). The main area's overflow is locked so the map
   doesn't spawn a page scrollbar.
 
 ### What's not yet implemented
 
-- **Graph RAM footprint.** The full enriched GraphML (~178 MB, 52k nodes/150k edges)
-  loads to ~2.7 GB peak RSS in ~17s — over Streamlit Community Cloud's 1 GB cap.
-  **Phase 1 is DONE:** `walkability/graph/compact.py` converts it into a slim
-  runtime `MultiDiGraph` pickle holding only the query-time keep-set (packed
-  `float32` geometry instead of shapely, native-float scores, no unused string
-  attrs) — measured 17s→0.5s load, 2.7GB→0.45GB peak RSS, 178MB→40MB on disk, with
-  verified route-for-route parity. Build via `python -m walkability.graph.compact
-  [--all|--dev|--region <r>]`; it's still a plain `MultiDiGraph` so
-  routing/clip/router are unchanged. The `*.runtime.pkl` assets are uploaded to the
-  `data-v1` GitHub Release. **Phase 2 (open):** replace the per-query NetworkX
-  substrate with numpy CSR arrays for sub-100 MB/instant load — an optimisation,
-  not a deploy blocker, since Phase 1 already clears the 1 GB cap.
+- **Graph RAM footprint — Phase 1 DONE (slim runtime pickle).** The enriched
+  GraphML loaded to **~2.7 GB peak / ~2.2 GB resident** in **~17 s** (52k nodes /
+  150k edges; the 178 MB GraphML balloons from Python per-object overhead, ~32
+  string attrs/edge, and ~81k shapely geometry objects) — over **Streamlit
+  Community Cloud's 1 GB cap**, where *routing* thrashed on swap → multi-minute
+  hangs. `walkability/graph/compact.py` now converts the enriched GraphML into a
+  **slim runtime `MultiDiGraph`** holding only the query-time keep-set (node `y`/`x`
+  + crossing `highway`; per-edge `length`, `foot_access`, `highway`, `name`, the
+  factor scores/confidences `edge_walkability` reads, baked `walk_score`/
+  `walk_confidence`, and `geometry` packed to a `float32` (n,2) array instead of
+  shapely), with scores pre-coerced to native `float`. Pickled, not GraphML.
+  Measured **17 s → 0.5 s load, 2.74 GB → 0.45 GB peak RSS, 178 MB → 40 MB on
+  disk**, with **verified route-for-route parity** (default + slider weights,
+  α=0/2/5, short/mid/long) and packed-geometry fidelity (~0.4 m float32 error).
+  This clears the 1 GB ceiling by a wide margin. It is still a plain
+  `MultiDiGraph`, so **routing/clip/router are unchanged**; only the app's
+  `_edge_coords` learns the packed-ndarray geometry type. Build with
+  `python -m walkability.graph.compact [--all|--dev|--region <r>]` (a post-process
+  on the enriched GraphML — **no `--force` rebuild**); the app's `get_graph` loads
+  the `*.runtime.pkl` sibling, downloading it from the release in preference to the
+  GraphML (which remains the fallback). The `*.runtime.pkl` assets are **uploaded to
+  the `data-v1` GitHub Release**, so the live app loads the slim graph; this is what
+  cleared the 1 GB cap and let the app move to **Streamlit Community Cloud**.
+- **Graph RAM — Phase 2 (open): compact CSR arrays.** For sub-100 MB / instant
+  load, replace the per-query NetworkX substrate with numpy CSR (`indptr` + flat
+  `float32` edge fields, code-mapped categoricals, packed geometry) — no Python
+  object per edge. Routing/clip would adapt to it; notebooks keep GraphML. Phase 1
+  already clears 1 GB, so this is now an optimisation, not a deploy blocker.
 - **More map areas (UI TODO).** The "Map area" selector is parked in an expander at
   the bottom of the rail and currently offers Full Boston + the `DEV_REGIONS` test
   beds. When real additional areas/cities are added, promote it to a first-class
-  control. Areas come from `DEV_REGIONS` in `build.py`.
+  control (and reconsider placement). Areas come from `DEV_REGIONS` in `build.py`.
+- **Routes are clipped to Boston's municipal boundary (known limitation).** The walk
+  graph is the OSM extract for the **city of Boston only**, so any route whose
+  geographically optimal path leaves the city is forced to detour and comes out
+  suboptimal. The sharpest case is **Brookline** — a separate town wedged into Boston
+  between Allston/Brighton and Jamaica Plain/Mission Hill: an Allston→Jamaica Plain
+  walk would naturally cut through Brookline, but those streets aren't in the graph,
+  so the router takes the longer way around *within* Boston. Fixing it means widening
+  the OSM extract past the city line (in `graph/download.py`) and rebuilding/
+  re-enriching; the scoring/routing code is unaffected.
 - Additional factors in `FACTOR_WEIGHTS` (`crossing_quality`, `poi_density`,
   `elevation_change`) remain removed — no enrichment tier produces that edge data
   yet. Re-add a weight only alongside the edge field that feeds it. `elevation_change`

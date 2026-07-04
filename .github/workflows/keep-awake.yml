@@ -1,0 +1,32 @@
+name: Keep Streamlit app awake
+
+# Streamlit Community Cloud sleeps an inactive app after ~12h. Waking it
+# requires a real browser: the sleep screen is gated behind a WebSocket
+# handshake that only fires after JS runs, so a plain curl/HTTP ping never
+# wakes it (see .github/scripts/keep_awake.mjs). Runs more often than the
+# sleep threshold so the app is never actually caught napping.
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        run: |
+          npm install playwright@1
+          npx playwright install --with-deps chromium
+
+      - name: Visit app and wake it if asleep
+        env:
+          APP_URL: ${{ vars.STREAMLIT_APP_URL }}
+        run: node .github/scripts/keep_awake.mjs
