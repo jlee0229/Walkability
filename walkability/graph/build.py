@@ -960,6 +960,17 @@ DEV_REGIONS: dict[str, dict] = {
         "lat": 42.3290, "lon": -71.0830, "radius_m": 600.0,
         "note": "Nubian Sq / Washington St — highest arterial exposure (~11% arterial)",
     },
+    "brookline_seam": {
+        "lat": 42.3450, "lon": -71.1170, "radius_m": 800.0,
+        "note": "St Mary's St / BU Bridge — Boston↔Brookline data seam; Brookline "
+                "side is OSM-tier only (no city sidewalk inventory)",
+    },
+    "metro_hull_seam": {
+        "lat": 42.3730, "lon": -71.0740, "radius_m": 800.0,
+        "note": "Gilmore Bridge / Charlestown↔East Cambridge — Boston↔hull-town "
+                "data seam (Cambridge/Somerville/Everett/Chelsea are OSM-tier "
+                "only, like Brookline)",
+    },
 }
 
 

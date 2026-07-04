@@ -249,6 +249,92 @@ def check_clip_matches_full(Gfull) -> None:
           f"{mism}/{n} mismatched")
 
 
+# --- (data seam) Boston (city data) vs Brookline (OSM-tier only) ------------
+
+# Approximate bbox over the Brookline enclave core (lon_min, lat_min, lon_max,
+# lat_max). Brookline carries NO city sidewalk inventory, so every edge here is
+# OSM-tier. We don't have municipal polygons offline, so a bbox is used; it may
+# clip in a few border-Boston edges, but those are also OSM-tier or city-tier and
+# only make the two buckets MORE similar — the test only fails if Brookline edges
+# are systematically worse, so the approximation is conservative.
+BROOKLINE_BBOX = (-71.155, 42.310, -71.105, 42.350)
+# Metro-hull towns (Cambridge/Somerville/Everett/Chelsea, config.PLACES
+# 2026-07-04). One coarse box over all four; it overlaps Charlestown/East
+# Boston, which is fine for the env-coverage check (every edge must have an
+# environment_score regardless of municipality).
+HULL_BBOX = (-71.165, 42.352, -71.005, 42.425)
+SEAM_SCORE_TOL = 0.10   # max allowed gap in median OSM-tier walk_score across the seam
+
+
+def _in_bbox(G, u, v, bbox) -> bool:
+    """True if the edge's midpoint falls inside (lon_min, lat_min, lon_max, lat_max)."""
+    try:
+        lon = (G.nodes[u]["x"] + G.nodes[v]["x"]) / 2.0
+        lat = (G.nodes[u]["y"] + G.nodes[v]["y"]) / 2.0
+    except KeyError:
+        return False
+    lon_min, lat_min, lon_max, lat_max = bbox
+    return lon_min <= lon <= lon_max and lat_min <= lat <= lat_max
+
+
+def check_data_source_seam(G) -> None:
+    """Verify Brookline's OSM-tier scoring is uniform with Boston's, and that the
+    environment factor covers the widened extent.
+
+    The city sidewalk inventory is Boston-only, so Brookline edges fall through to
+    the OSM tier (comfort category drops out — NOT zeroed). This must be the SAME
+    graceful degradation Boston's own ~18% OSM-tier edges already get, not a
+    Brookline-specific penalty. Also guards the P1 trap: if download_environment.py
+    were left Boston-only while the graph widened, Brookline edges would silently
+    lose their safety factor.
+    """
+    brk_env_missing = 0
+    hull_env_missing = 0
+    brk_osm_scores: list[float] = []
+    bos_osm_scores: list[float] = []
+    brk_conf: list[float] = []
+    bos_conf: list[float] = []
+
+    for u, v, _k, d in G.edges(keys=True, data=True):
+        in_brk = _in_bbox(G, u, v, BROOKLINE_BBOX)
+        is_city = _as_str(d.get("data_source")) == "city_inventory"
+        if in_brk and _as_float(d.get("environment_score")) is None:
+            brk_env_missing += 1
+        if _in_bbox(G, u, v, HULL_BBOX) and _as_float(d.get("environment_score")) is None:
+            hull_env_missing += 1
+        if is_city:
+            continue  # only OSM-tier edges are comparable across the seam
+        w, c = edge_walkability(d)
+        (brk_osm_scores if in_brk else bos_osm_scores).append(w)
+        (brk_conf if in_brk else bos_conf).append(c)
+
+    # (a) environment coverage over the widened extent
+    check("every Brookline-bbox edge has environment_score (env layers widened)",
+          brk_env_missing == 0, f"{brk_env_missing} missing env_score in bbox")
+    check("every hull-bbox edge has environment_score (env layers cover hull towns)",
+          hull_env_missing == 0, f"{hull_env_missing} missing env_score in hull bbox")
+
+    # (b) uniform degradation: Brookline OSM-tier ≈ Boston OSM-tier walk_score.
+    # Skipped (informational) until the graph is actually rebuilt with Brookline —
+    # on a Boston-only graph the bbox holds too few edges to compare.
+    if len(brk_osm_scores) < 20:
+        print(f"  [INFO] seam score comparison skipped — only {len(brk_osm_scores)} "
+              f"Brookline-bbox OSM-tier edges (rebuild with Brookline to enable).")
+    else:
+        brk_med = float(np.median(brk_osm_scores))
+        bos_med = float(np.median(bos_osm_scores))
+        gap = bos_med - brk_med   # positive = Brookline scores lower
+        check("Brookline OSM-tier walk_score ≈ Boston OSM-tier (uniform, not penalised)",
+              abs(gap) <= SEAM_SCORE_TOL,
+              f"median Boston-OSM {bos_med:.3f} vs Brookline-OSM {brk_med:.3f} (gap {gap:+.3f})")
+
+    # (c) informational: confidence is a tiebreaker only (never in edge_cost), so a
+    # lower Brookline confidence does not distort routing — reported for visibility.
+    if brk_conf and bos_conf:
+        print(f"  [INFO] mean walk_confidence — Boston-OSM {np.mean(bos_conf):.3f}, "
+              f"Brookline-OSM {np.mean(brk_conf):.3f} (tiebreaker only, not in cost).")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Run automated invariant checks.")
     ap.add_argument("--quick", action="store_true",
@@ -272,6 +358,9 @@ if __name__ == "__main__":
         print("\n=== Clip correctness (full graph) ===")
         Gfull = load_graph(ENRICHED_PATH)
         check_clip_matches_full(Gfull)
+
+        print("\n=== Data seam (Boston city-data vs Brookline OSM-tier) ===")
+        check_data_source_seam(Gfull)
 
     print(f"\n{_PASS} passed, {_FAIL} failed.")
     sys.exit(1 if _FAIL else 0)

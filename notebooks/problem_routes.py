@@ -111,6 +111,64 @@ PROBLEM_ROUTES: list[dict] = [
         "observed_problem": "TODO: high arterial exposure around Washington St / Nubian Sq",
         "hypothesis": "TODO",
     },
+    # --- cross_brookline: routes that must pass THROUGH Brookline ----------
+    # Allston/Brighton is Boston but is separated from the mainland by the
+    # Brookline enclave; before Brookline was added to config.PLACES this route
+    # had no continuous path (or detoured along the thin Charles-River strip).
+    # After the rebuild it should return continuous routes; the Brookline stretch
+    # is OSM-tier only (no city sidewalk data) — a real city-agnosticism probe.
+    {
+        "name": "allston_to_jamaica_plain",
+        "region": "brookline_seam",
+        "origin": (42.3530, -71.1310),   # Allston village (Harvard Ave)
+        "dest": (42.3100, -71.1140),     # Jamaica Plain center (Centre St)
+        "alpha": 2.0,
+        "observed_problem": "Was unreachable/detoured: path crosses the Brookline "
+                            "enclave, which used to be outside the graph.",
+        "hypothesis": "Graph-extent gap (Brookline), not a scoring problem. Expect "
+                      "IMPROVED (route found). Brookline segments score on {safety, "
+                      "path} only — comfort drops out, not zeroed.",
+    },
+    # --- metro_hull_seam: routes that need the Cambridge/Somerville/Everett/
+    # Chelsea hull towns (added to config.PLACES 2026-07-04). Before the hull,
+    # every Charlestown trip was forced over the single North Washington St
+    # bridge, and these destinations were outside the graph entirely (snapping
+    # silently pulled them to the nearest in-graph node). All hull towns are
+    # OSM-tier only (no city sidewalk inventory) — same graceful degradation
+    # as Brookline. ---------------------------------------------------------
+    {
+        "name": "charlestown_to_kendall",
+        "region": "metro_hull_seam",
+        "origin": (42.3745, -71.0630),   # Charlestown (Main St / Thompson Sq)
+        "dest": (42.3625, -71.0862),     # Kendall Sq / MIT (Cambridge)
+        "alpha": 2.0,
+        "observed_problem": "Destination was outside the graph pre-hull; route "
+                            "must cross the Gilmore Bridge into East Cambridge.",
+        "hypothesis": "Graph-extent gap (Cambridge). Expect a continuous route; "
+                      "Cambridge stretch is OSM-tier only.",
+    },
+    {
+        "name": "sullivan_to_assembly",
+        "region": "metro_hull_seam",
+        "origin": (42.3840, -71.0760),   # Sullivan Sq (Charlestown side)
+        "dest": (42.3923, -71.0785),     # Assembly Row (Somerville)
+        "alpha": 2.0,
+        "observed_problem": "Destination was outside the graph pre-hull; short "
+                            "hop across the Boston↔Somerville line at Sullivan.",
+        "hypothesis": "Graph-extent gap (Somerville). Expect a short continuous "
+                      "route through the Sullivan Sq interchange area.",
+    },
+    {
+        "name": "eastie_to_chelsea",
+        "region": "metro_hull_seam",
+        "origin": (42.3720, -71.0395),   # East Boston (Central Sq / Meridian St)
+        "dest": (42.3917, -71.0330),     # Chelsea (Bellingham Sq)
+        "alpha": 2.0,
+        "observed_problem": "Chelsea was outside the graph pre-hull; route must "
+                            "cross the Meridian St (Andrew McArdle) bridge.",
+        "hypothesis": "Graph-extent gap (Chelsea). Expect a continuous route over "
+                      "the creek; Chelsea stretch is OSM-tier only.",
+    },
 ]
 
 

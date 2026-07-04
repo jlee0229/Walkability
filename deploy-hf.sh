@@ -16,7 +16,7 @@ set -euo pipefail
 # stripped from the deploy snapshot only.
 EXCLUDE=(
   "Research/walkability_day3_summary.docx"
-  "notebooks/boston_overlayed_pedestrian.png"
+  "archive/notebooks/boston_overlayed_pedestrian.png"
 )
 
 START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"

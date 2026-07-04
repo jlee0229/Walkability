@@ -46,5 +46,37 @@
     "confidence": 0.8473,
     "hops": 20,
     "path_fp": 3026457617
+  },
+  "allston_to_jamaica_plain": {
+    "found": true,
+    "length": 5923.1,
+    "walk_score": 0.8383,
+    "confidence": 0.7773,
+    "hops": 182,
+    "path_fp": 2760805414
+  },
+  "charlestown_to_kendall": {
+    "found": true,
+    "length": 3810.7,
+    "walk_score": 0.8387,
+    "confidence": 0.8188,
+    "hops": 111,
+    "path_fp": 594033325
+  },
+  "sullivan_to_assembly": {
+    "found": true,
+    "length": 2009.7,
+    "walk_score": 0.664,
+    "confidence": 0.7169,
+    "hops": 69,
+    "path_fp": 4041193041
+  },
+  "eastie_to_chelsea": {
+    "found": true,
+    "length": 2624.7,
+    "walk_score": 0.8269,
+    "confidence": 0.8194,
+    "hops": 92,
+    "path_fp": 312190501
   }
 }
