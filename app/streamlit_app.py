@@ -1,5 +1,5 @@
 """
-Humanpath — walkability-aware walking routes for Boston (Streamlit UI).
+Humanpath — walkability-aware walking routes for metro Boston (Streamlit UI).
 
 Run with:
     streamlit run app/streamlit_app.py
@@ -285,17 +285,32 @@ def _edge_coords(G, u, v, key):
     return [(G.nodes[u]["y"], G.nodes[u]["x"]), (G.nodes[v]["y"], G.nodes[v]["x"])]
 
 
-# Geocoding, Boston-biased; cached so repeats are instant. Primary is **Photon**
+# Geocoding, metro-biased; cached so repeats are instant. Primary is **Photon**
 # (komoot) — OSM-based, no key, and tolerant of server/cloud use. Nominatim's public
 # server rate-limits/blocks shared cloud IPs (Streamlit Community Cloud), which used
 # to HANG the deployed app on "Reading the streets…" via a no-timeout osmnx fallback.
 # Photon primary + a timed Nominatim fallback fixes that; every call has a hard
 # timeout so geocoding can never spin forever (worst case → "couldn't find address").
 _PHOTON_URL = "https://photon.komoot.io/api"
-_PHOTON_BIAS = {"lat": 42.34, "lon": -71.09, "bbox": "-71.20,42.22,-70.98,42.43"}
+# Coverage box = the config.PLACES metro hull (Boston + Brookline + Cambridge /
+# Somerville / Everett / Chelsea), matching the graph extent and the PMTiles cut —
+# keep the three in sync when PLACES widens. Photon's `bbox` HARD-FILTERS results,
+# which is what lets a bare name ("Harvard Square", "Assembly Row") resolve to the
+# local one without appending a town to the query.
+_METRO_BBOX = (-71.21, 42.21, -70.94, 42.44)   # lon_min, lat_min, lon_max, lat_max
+_PHOTON_BIAS = {"lat": 42.36, "lon": -71.08,
+                "bbox": ",".join(str(v) for v in _METRO_BBOX)}
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_BOSTON_VIEWBOX = "-71.20,42.43,-70.98,42.22"
+# Nominatim viewbox order is left,top,right,bottom.
+_METRO_VIEWBOX = f"{_METRO_BBOX[0]},{_METRO_BBOX[3]},{_METRO_BBOX[2]},{_METRO_BBOX[1]}"
 _GEO_HEADERS = {"User-Agent": "walkability-route-app/0.1 (educational project)"}
+
+
+def in_coverage(latlon) -> bool:
+    """True if a geocoded (lat, lon) falls inside the covered metro extent."""
+    lat, lon = latlon
+    lon_min, lat_min, lon_max, lat_max = _METRO_BBOX
+    return lon_min <= lon <= lon_max and lat_min <= lat <= lat_max
 
 
 @st.cache_data(show_spinner=False)
@@ -315,8 +330,10 @@ def _geocode_query(q: str):
     except Exception:
         pass
 
-    # Fallback: Nominatim (bounded to Boston, then unbounded), each call timed.
-    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": _BOSTON_VIEWBOX}
+    # Fallback: Nominatim (bounded to the metro box, then unbounded), each call
+    # timed. An unbounded hit outside the box is caught by in_coverage at the
+    # call site (clear "outside the covered area" error, not a bad snap).
+    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": _METRO_VIEWBOX}
     for bounded in (1, 0):
         try:
             resp = requests.get(_NOMINATIM_URL, params={**base, "bounded": bounded},
@@ -331,11 +348,13 @@ def _geocode_query(q: str):
 
 
 def geocode(query: str):
+    """(lat, lon) for an address, or None. No town is appended to the query —
+    that used to force ", Boston" onto bare names, which made every address in
+    the hull towns (Cambridge/Somerville/Everett/Chelsea/Brookline) ungeocodable.
+    Photon's metro bbox filter does the disambiguation instead."""
     q = query.strip()
     if not q:
         return None
-    if "boston" not in q.lower() and "," not in q:
-        q = f"{q}, Boston, Massachusetts, USA"
     try:
         return _geocode_query(q)
     except Exception:
@@ -523,14 +542,23 @@ G = get_graph(graph_path)
 
 if find:
     st.session_state.error = None
+    _covered = "Boston, Brookline, Cambridge, Somerville, Everett, or Chelsea"
     with st.spinner("Reading the streets…"):
         o = geocode(o_addr)
         d = geocode(d_addr)
-        routes_found = None if (o is None or d is None) else find_routes(G, o, d, alpha=alpha, weights=weights)
+        ok = (o is not None and d is not None
+              and in_coverage(o) and in_coverage(d))
+        routes_found = find_routes(G, o, d, alpha=alpha, weights=weights) if ok else None
     if o is None:
         st.session_state.error = f"Couldn't find “{o_addr}”. Try a more specific address."
     elif d is None:
         st.session_state.error = f"Couldn't find “{d_addr}”. Try a more specific address."
+    elif not in_coverage(o):
+        st.session_state.error = (f"“{o_addr}” looks outside the covered area. "
+                                  f"Humanpath currently covers {_covered}.")
+    elif not in_coverage(d):
+        st.session_state.error = (f"“{d_addr}” looks outside the covered area. "
+                                  f"Humanpath currently covers {_covered}.")
     else:
         st.session_state.routes = routes_found
         st.session_state.committed = params
