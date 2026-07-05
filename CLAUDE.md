@@ -182,16 +182,43 @@ These are dev/QA scripts, not part of the package. They import each other as sib
 
 All **query-time, no rebuild** (no new edge fields). `find_routes(..., refine_sides=False)` disables phase 2 for A/B comparison. Skipped at `alpha=0` (the corridor is already the shortest path, preserving the length floor). **The single tuning knob is `TUBE_WIDTH_M`** (too narrow → can't reach the needed side on a wide street; too wide → phase 2 can jump to a shorter parallel street). Tuning it or `REFINE_*` is query-time but **re-baseline `notebooks/problem_routes_baseline.json`**.
 
-### Boston sidewalk inventory field mapping
+### City inventory profiles (`walkability/graph/inventory.py`)
 
-The shapefile columns do not match generic names — use these constants in `build.py`:
+Every municipality's sidewalk inventory has different column names, a different
+condition scale, material vocabulary, "never surveyed" marker, and metric CRS.
+All of that municipality-specific detail lives in a **`CityInventoryProfile`**
+(`walkability/graph/inventory.py`) — the generic aggregation/schema logic in
+`build.py` reads from a profile it is passed (`build(profile=…)`,
+`--city {boston,austin}`). **Adding a city is adding a profile there**, not
+editing `build.py`. A profile holds: I/O paths + metric CRS; source field names
+(`condition_field`/`surface_field`/`width_field`/`date_field`/`area_field`/
+`side_field`); scale adapters (`condition_to_score`: native → [0,1], and its
+inverse `aggregate_condition` for the audit round-trip); `material_map` +
+`surface_score()`; an `is_phantom` predicate; and a **normalised**
+`divergence_threshold` (Boston 0.15 == 15 SCI points). `area_field=None` ⇒ the
+inventory is line/segment-based, so the both-sides weight is projected geometry
+length instead of polygon area (Austin); `side_field=None` ⇒ divergence uses the
+two largest-weight contributors as pseudo-sides. **Invariant:** `BOSTON_PROFILE`
+reproduces the pre-refactor Boston output *byte-for-byte* (verified: 0 edge
+diffs, max numeric delta 0.0 on the beacon_hill rebuild), incl. the condition
+round-trip and its rounding — so the enriched graph and `problem_routes_baseline`
+stayed valid with **no `--force` rebuild**. `AUSTIN_PROFILE` (Chapter D) is
+scaffolded; its 1–5 rating is **inverted vs Boston SCI** (Austin 1=Excellent …
+5=Failed, so `(5−rating)/4`) and feeds `surface_score` from the pure-structural
+`rating_no_veg` column, *not* the vegetation-demoted `rating_overall` (whose
+clearance signal is a candidate new obstruction factor). Remaining
+`TODO(austin-verify)` markers cover only what needs the downloaded data:
+`rating_no_veg` coverage/exact name, full `sidewalk_surface` vocab, whether a
+side attribute exists, the phantom predicate, and the inventory filename.
 
-| Constant | Column | Notes |
+#### Boston (`BOSTON_PROFILE`) field mapping
+
+| Field (profile) | Column | Notes |
 |---|---|---|
-| `SWK_CONDITION_FIELD` | `SCI` | Sidewalk Condition Index, numeric string 0–100. **Partly corrupt**: ~430 negatives (down to ~−68000, a city calc error) + the string `"NaN"`. `_condition_to_score` returns `None` for anything outside 0–100, so those edges fall through to the OSM tier instead of mis-scoring `surface_score=0.0`. |
-| `SWK_WIDTH_FIELD` | `SWK_WIDTH` | Width in feet |
-| `SWK_SURFACE_FIELD` | `MATERIAL` | Codes: `CC`=concrete, `BR`=brick, `BIT`/`AC`=asphalt, `GR`=granite, `OT`=other (scores as None) |
-| `SWK_DATE_FIELD` | `new_insp_d` | Most recent re-inspection date; 1970-01-01 is a Unix-epoch placeholder (17% of rows, concentrated in West Roxbury and Downtown — a data-entry batch issue, not a spatial quality signal) |
+| `condition_field` | `SCI` | Sidewalk Condition Index, numeric string 0–100. **Partly corrupt**: ~430 negatives (down to ~−68000, a city calc error) + the string `"NaN"`. `condition_to_score` returns `None` for anything outside 0–100, so those edges fall through to the OSM tier instead of mis-scoring `surface_score=0.0`. |
+| `width_field` | `SWK_WIDTH` | Width in feet |
+| `surface_field` | `MATERIAL` | Codes: `CC`=concrete, `BR`=brick, `BIT`/`AC`=asphalt, `GR`=granite, `OT`=other (scores as None) — via `material_map` |
+| `date_field` | `new_insp_d` | Most recent re-inspection date; 1970-01-01 is a Unix-epoch placeholder (17% of rows, concentrated in West Roxbury and Downtown — a data-entry batch issue, not a spatial quality signal) |
 
 **1970-date two-level treatment** (in `_build_canonical_schema`): rows with a pre-2000 date are split by the `inspected` column before confidence is assigned:
 - `inspected = "yes"` → survey happened, date was mis-logged. Use SCI/MATERIAL; apply `CONF_CITY_DATE_MISSING = CONF_CITY_OLDER × 0.85` (≈ 0.72). Do **not** treat these as lower-quality edges — the West Roxbury concentration would introduce a spurious spatial confidence gradient.

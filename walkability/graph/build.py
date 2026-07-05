@@ -62,50 +62,35 @@ import pandas as pd
 
 from walkability.config import OSM_DIR, DATA_DIR
 from walkability.graph.environment import build_environment_index
+from walkability.graph.inventory import (
+    BOSTON_PROFILE,
+    CITY_PROFILES,
+    CityInventoryProfile,
+)
 from walkability.osm.fallback import get_fallback
 from walkability.osm.tag_resolver import resolve_edge_tags
 from walkability.scoring.factors import edge_walkability
 from walkability.scoring.weights import (
     SIDEWALK_WIDTH_GOOD_FT,
     SIDEWALK_WIDTH_MIN_FT,
-    SURFACE_SCORES,
 )
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-GRAPH_PATH        = OSM_DIR / "boston_walk.graphml"
-INVENTORY_PATH    = DATA_DIR / "boston" / "sidewalk_inventory" / "Sidewalk_Inventory.shp"
+# The default city. Every municipality-specific detail (inventory schema,
+# condition scale, material vocabulary, metric CRS, I/O paths) lives in a
+# CityInventoryProfile — see walkability/graph/inventory.py. Adding a city is
+# adding a profile there; the pipeline below reads from the profile it is given.
+DEFAULT_PROFILE = BOSTON_PROFILE
+
+# Backward-compatible module-level paths (external code imports these). They
+# alias the default profile so existing notebooks/app keep working unchanged.
+GRAPH_PATH        = DEFAULT_PROFILE.graph_path
+INVENTORY_PATH    = DEFAULT_PROFILE.inventory_path
+ENRICHED_PATH     = DEFAULT_PROFILE.enriched_path
 CENTERLINE_PATH   = DATA_DIR / "boston" / "sidewalk_centerline" / "sidewalk_centerline.shp"
-ENRICHED_PATH     = OSM_DIR / "boston_walk_enriched.graphml"
-
-# ---------------------------------------------------------------------------
-# Sidewalk inventory field names
-# ---------------------------------------------------------------------------
-# These must match the actual shapefile column names.
-# Run inspect_inventory_fields() to print all available columns before
-# changing these — the shapefile schema is controlled by Boston DPW and
-# may differ across vintages.
-#
-# To find actual names: call inspect_inventory_fields() at the bottom of
-# this file or import and call it from a notebook.
-
-SWK_CONDITION_FIELD   = "SCI"          # Sidewalk Condition Index (0–100 numeric, higher = better)
-SWK_WIDTH_FIELD       = "SWK_WIDTH"    # Sidewalk width in feet
-SWK_SURFACE_FIELD     = "MATERIAL"     # Boston DPW material code (CC, BR, BIT, GR, OT, ...)
-SWK_DATE_FIELD        = "new_insp_d"   # Most recent re-inspection date
-
-# Boston DPW material codes → OSM surface labels (for lookup in SURFACE_SCORES).
-# OT (Other) is intentionally absent — unknown material, returns None from
-# _surface_label_to_score so it doesn't override a better OSM surface tag.
-MATERIAL_CODE_MAP: dict[str, str] = {
-    "CC":  "concrete",       # Concrete — most common Boston sidewalk
-    "BR":  "paving_stones",  # Brick / cobblestone
-    "BIT": "asphalt",        # Bituminous asphalt
-    "AC":  "asphalt",        # Asphalt (alternate code)
-    "GR":  "paving_stones",  # Granite slab (similar walking quality to pavers)
-}
 
 # ---------------------------------------------------------------------------
 # Spatial join parameters
@@ -115,9 +100,6 @@ MATERIAL_CODE_MAP: dict[str, str] = {
 # Deliberately smaller than the 15m buffer used in footway geometric
 # inference — dense Boston grid needs tighter tolerance.
 SPATIAL_JOIN_CUTOFF_M: float = 10.0
-
-# Metric CRS for distance calculations. UTM Zone 19N covers Boston.
-METRIC_CRS = "EPSG:32619"
 
 # ---------------------------------------------------------------------------
 # City data confidence parameters
@@ -142,7 +124,9 @@ CONSISTENCY_PENALTY      = 0.75
 # average all matched candidates. When they genuinely disagree the single edge
 # value is less trustworthy, so we down-weight its confidence (a routing/re-rank
 # tiebreaker — never a hard cost term).
-DIVERGENCE_THRESHOLD_SCI = 15.0   # SCI points (0–100 scale); sides differ by more → divergent
+# Divergence sensitivity is per-city (profile.divergence_threshold), expressed in
+# normalised [0,1] condition units so it is scale-agnostic (Boston 0.15 == 15 SCI
+# points). The penalty applied when the two sides disagree is city-agnostic:
 DIVERGENCE_PENALTY       = 0.85   # multiply surface_confidence on divergent edges
 
 # Lever 3 (re-anchor): a pedestrian-DEDICATED recreational path (greenway / park
@@ -163,8 +147,8 @@ PED_PATH_RECREATIONAL_MIN = 0.30   # min openness OR road_separation to qualify
 def inspect_inventory_fields(path: Path = INVENTORY_PATH) -> None:
     """Print sidewalk inventory columns and sample values.
 
-    Run this once after receiving a new vintage of the shapefile to
-    verify that SWK_* field name constants above are still correct.
+    Run this once after receiving a new vintage of the inventory to verify that
+    the profile's field names (see inventory.py) are still correct.
     """
     gdf = gpd.read_file(path)
     print(f"Sidewalk inventory: {len(gdf)} features, CRS={gdf.crs}")
@@ -176,8 +160,9 @@ def inspect_inventory_fields(path: Path = INVENTORY_PATH) -> None:
 
 
 def diagnose_spatial_join(
-    graph_path:     Path = GRAPH_PATH,
-    inventory_path: Path = INVENTORY_PATH,
+    graph_path:     Path | None = None,
+    inventory_path: Path | None = None,
+    profile:        CityInventoryProfile = DEFAULT_PROFILE,
 ) -> None:
     """Diagnose why the spatial join may be returning 0 matches.
 
@@ -190,6 +175,10 @@ def diagnose_spatial_join(
         python -c "from walkability.graph.build import diagnose_spatial_join; diagnose_spatial_join()"
     """
     import osmnx as ox
+
+    graph_path     = graph_path if graph_path is not None else profile.graph_path
+    inventory_path = inventory_path if inventory_path is not None else profile.inventory_path
+    metric_crs     = profile.metric_crs
 
     print("=== Spatial join diagnostics ===\n")
 
@@ -208,13 +197,13 @@ def diagnose_spatial_join(
     print(f"    OSM edges CRS (from osmnx):         {edges_gdf.crs}")
 
     # --- 2. Bounding box overlap after reprojection ---
-    swk_metric   = sidewalks.to_crs(METRIC_CRS)
-    edges_metric = edges_gdf[["geometry"]].to_crs(METRIC_CRS)
+    swk_metric   = sidewalks.to_crs(metric_crs)
+    edges_metric = edges_gdf[["geometry"]].to_crs(metric_crs)
 
     swk_bounds   = swk_metric.total_bounds    # [minx, miny, maxx, maxy]
     edge_bounds  = edges_metric.total_bounds
 
-    print(f"\n[2] Bounding boxes in {METRIC_CRS}:")
+    print(f"\n[2] Bounding boxes in {metric_crs}:")
     print(f"    Sidewalks : x=[{swk_bounds[0]:.0f}, {swk_bounds[2]:.0f}]  "
           f"y=[{swk_bounds[1]:.0f}, {swk_bounds[3]:.0f}]")
     print(f"    OSM edges : x=[{edge_bounds[0]:.0f}, {edge_bounds[2]:.0f}]  "
@@ -231,7 +220,7 @@ def diagnose_spatial_join(
     # --- 3. sjoin column naming ---
     edges_gdf = edges_gdf.reset_index()
     edges_gdf["_edge_id"] = list(zip(edges_gdf["u"], edges_gdf["v"], edges_gdf["key"]))
-    edges_metric = edges_gdf[["_edge_id", "geometry"]].to_crs(METRIC_CRS)
+    edges_metric = edges_gdf[["_edge_id", "geometry"]].to_crs(metric_crs)
 
     swk_metric = swk_metric.copy()
     swk_metric["_swk_idx"] = swk_metric.index
@@ -369,18 +358,22 @@ def load_graph(path: Path = GRAPH_PATH) -> nx.MultiDiGraph:
     return G
 
 
-def load_sidewalk_inventory(path: Path = INVENTORY_PATH) -> gpd.GeoDataFrame:
-    """Load and lightly validate the Boston sidewalk inventory shapefile."""
+def load_sidewalk_inventory(
+    path:    Path | None = None,
+    profile: CityInventoryProfile = DEFAULT_PROFILE,
+) -> gpd.GeoDataFrame:
+    """Load and lightly validate a city's sidewalk inventory."""
+    path = path if path is not None else profile.inventory_path
     print(f"Loading sidewalk inventory from {path} ...")
     gdf = gpd.read_file(path)
     print(f"  {len(gdf)} features, CRS={gdf.crs}")
 
-    missing = [f for f in [SWK_CONDITION_FIELD, SWK_DATE_FIELD] if f not in gdf.columns]
+    missing = [f for f in profile.required_fields if f not in gdf.columns]
     if missing:
         warnings.warn(
-            f"Expected field(s) not found in sidewalk inventory: {missing}. "
-            f"Run inspect_inventory_fields() to see available columns and update "
-            f"the SWK_* constants in build.py."
+            f"Expected field(s) not found in {profile.name} sidewalk inventory: "
+            f"{missing}. Run inspect_inventory_fields() to see available columns "
+            f"and update the {profile.name} profile in inventory.py."
         )
     return gdf
 
@@ -388,29 +381,9 @@ def load_sidewalk_inventory(path: Path = INVENTORY_PATH) -> gpd.GeoDataFrame:
 # ---------------------------------------------------------------------------
 # City data helpers
 # ---------------------------------------------------------------------------
-
-def _condition_to_score(raw_condition: Any) -> float | None:
-    """Convert a raw SCI value (0–100 numeric string) to a [0, 1] score.
-
-    SCI is defined on 0–100. The Boston source field (stored as strings) is
-    partly corrupt: the literal ``"NaN"`` and negatives down to ~-68000 (an error
-    in the city's SCI calculation). These are NOT "destroyed sidewalk = 0" — they
-    are *no valid measurement*. Return None for anything outside [0, 100] (this
-    also catches the ``"NaN"`` string, since ``nan`` comparisons are False) so the
-    edge falls through to the OSM-tag surface tier rather than being mis-scored as
-    the worst possible surface. Without this, ~5,250 edges (4.3% of city-matched)
-    were wrongly assigned surface_score 0.0 from invalid SCI.
-    """
-    if raw_condition is None or (isinstance(raw_condition, float) and pd.isna(raw_condition)):
-        return None
-    try:
-        sci = float(raw_condition)
-    except (ValueError, TypeError):
-        return None
-    if not (0.0 <= sci <= 100.0):
-        return None
-    return round(sci / 100.0, 4)
-
+# The condition→score and material→score adapters are per-city and live on the
+# CityInventoryProfile (profile.condition_to_score / profile.surface_score); the
+# helpers below are city-agnostic.
 
 def _width_to_score(width_ft: float | None) -> float | None:
     """Map a sidewalk width (feet) to a [0, 1] Comfort sub-score.
@@ -424,27 +397,6 @@ def _width_to_score(width_ft: float | None) -> float | None:
     span = SIDEWALK_WIDTH_GOOD_FT - SIDEWALK_WIDTH_MIN_FT
     score = (width_ft - SIDEWALK_WIDTH_MIN_FT) / span if span > 0 else 1.0
     return round(min(1.0, max(0.0, score)), 4)
-
-
-def _surface_label_to_score(raw_surface: Any) -> float | None:
-    """Map a surface material to a [0, 1] score via SURFACE_SCORES.
-
-    Accepts both Boston DPW material codes (CC, BR, BIT, GR) and OSM
-    surface labels (concrete, asphalt, …). OT (Other) and unrecognised
-    codes return None so they never override a better OSM surface tag.
-    """
-    if raw_surface is None or (isinstance(raw_surface, float) and pd.isna(raw_surface)):
-        return None
-    raw = str(raw_surface).strip()
-    # Translate Boston DPW code → OSM label first
-    osm_label = MATERIAL_CODE_MAP.get(raw.upper(), raw.lower())
-    if osm_label in SURFACE_SCORES:
-        return SURFACE_SCORES[osm_label]
-    # Partial match for OSM labels (e.g. "asphalt_concrete" contains "asphalt")
-    for key in SURFACE_SCORES:
-        if key in osm_label:
-            return SURFACE_SCORES[key]
-    return None
 
 
 def _date_confidence(raw_date: Any) -> float:
@@ -499,124 +451,154 @@ def _city_surface_confidence(
     return round(date_conf * consistency, 4)
 
 
-def _aggregate_city_candidates(rows: gpd.GeoDataFrame) -> dict | None:
-    """Aggregate every sidewalk-inventory polygon matched to one OSM edge.
+def _aggregate_city_candidates(
+    rows:    gpd.GeoDataFrame,
+    profile: CityInventoryProfile,
+) -> dict | None:
+    """Aggregate every sidewalk-inventory feature matched to one OSM edge.
 
     Replaces the earlier single-nearest "coin flip": a street's two sidewalks
     both fall within SPATIAL_JOIN_CUTOFF_M of the centerline, and keeping
     whichever centroid happened to be closer was arbitrary (and silently dropped
-    the other side). Here we take an area-weighted mean over the *valid*
-    candidates (SCI in 0–100, width > 0; phantom never-surveyed polygons removed)
-    and flag divergence — candidates whose SCI differs by more than
-    DIVERGENCE_THRESHOLD_SCI, or whose material disagrees — so the caller can
-    down-weight confidence where our single edge value is least trustworthy.
+    the other side). Here we take a weight-weighted mean over the *valid*
+    candidates (valid condition, width > 0; phantom never-surveyed features
+    removed via ``profile.is_phantom``) and flag divergence — candidates whose
+    normalised condition differs by more than ``profile.divergence_threshold``,
+    or whose material disagrees — so the caller can down-weight confidence where
+    our single edge value is least trustworthy.
 
-    Returns a dict using the same field names the canonical schema reads (so the
-    downstream consumer is unchanged), plus ``_sci_divergent`` / ``_n_valid`` /
-    ``_sci_spread`` for the confidence penalty and build diagnostics. Returns
-    ``None`` when nothing usable matched (→ edge falls through to the OSM tier).
+    The per-candidate weight is polygon area (``profile.area_field``) where the
+    inventory is polygonal (Boston), or the feature's projected geometry length
+    where it is line/segment based (``area_field is None``; Austin). ``rows`` is
+    already in ``profile.metric_crs`` (see ``_build_spatial_index``), so
+    ``.geometry.length`` is in metres.
+
+    Returns a dict keyed by the profile's own field names (so the schema consumer
+    reads it like a source row), plus ``_cond_divergent`` / ``_n_valid`` /
+    ``_cond_spread`` (normalised) for the confidence penalty and diagnostics.
+    Returns ``None`` when nothing usable matched (→ edge falls through to OSM).
     """
-    contrib = []  # tuples: (row, year|None, raw_date, inspected, sci01, area)
+    cond_field = profile.condition_field
+    surf_field = profile.surface_field
+    width_field = profile.width_field
+    date_field = profile.date_field
+
+    contrib = []  # tuples: (row, raw_date, cond01, weight)
     for _, r in rows.iterrows():
-        raw_date = r.get(SWK_DATE_FIELD)
-        try:
-            yr = pd.to_datetime(raw_date).year
-        except Exception:
-            yr = None
-        insp = r.get("inspected")
-        insp_null = insp is None or (isinstance(insp, float) and pd.isna(insp))
-        if yr is not None and yr < 2000 and insp_null:
-            continue  # phantom polygon: exists but was never field-surveyed
-        sci01 = _condition_to_score(r.get(SWK_CONDITION_FIELD))
-        if sci01 is None:
-            continue  # no valid SCI measurement — don't pollute the mean
-        try:
-            area = float(r.get("SWK_AREA"))
-        except (TypeError, ValueError):
-            area = 0.0
-        if not (area > 0):
-            area = 1.0
-        contrib.append((r, yr, raw_date, insp, sci01, area))
+        if profile.is_phantom(r):
+            continue  # feature exists but was never field-surveyed
+        cond01 = profile.condition_to_score(r.get(cond_field))
+        if cond01 is None:
+            continue  # no valid condition measurement — don't pollute the mean
+        weight = 0.0
+        if profile.area_field is not None:
+            try:
+                weight = float(r.get(profile.area_field))
+            except (TypeError, ValueError):
+                weight = 0.0
+        else:
+            try:
+                weight = float(r.geometry.length)  # metric CRS → metres
+            except Exception:
+                weight = 0.0
+        if not (weight > 0):
+            weight = 1.0
+        raw_date = r.get(date_field) if date_field else None
+        contrib.append((r, raw_date, cond01, weight))
 
     if not contrib:
         return None  # nothing usable → fall through to the OSM-tag tier
 
-    wsum = sum(c[5] for c in contrib)
-    sci_mean01 = sum(c[4] * c[5] for c in contrib) / wsum
+    wsum = sum(c[3] for c in contrib)
+    cond_mean01 = sum(c[2] * c[3] for c in contrib) / wsum
 
-    # Area-weighted mean width over candidates that report a positive width.
-    wnum = wden = 0.0
-    for c in contrib:
-        try:
-            wid = float(c[0].get(SWK_WIDTH_FIELD))
-        except (TypeError, ValueError):
-            wid = None
-        if wid is not None and wid > 0:
-            wnum += wid * c[5]
-            wden += c[5]
-    width_mean = round(wnum / wden, 2) if wden > 0 else None
+    # Weight-weighted mean width over candidates that report a positive width.
+    width_mean = None
+    if width_field is not None:
+        wnum = wden = 0.0
+        for c in contrib:
+            try:
+                wid = float(c[0].get(width_field))
+            except (TypeError, ValueError):
+                wid = None
+            if wid is not None and wid > 0:
+                wnum += wid * c[3]
+                wden += c[3]
+        width_mean = round(wnum / wden, 2) if wden > 0 else None
 
-    # Material: conservative — the lowest-comfort recognised code (don't average
+    # Material: conservative — the lowest-comfort recognised token (don't average
     # categorical comfort upward).
-    mats = []
-    for c in contrib:
-        code = c[0].get(SWK_SURFACE_FIELD)
-        score = _surface_label_to_score(code)
-        if score is not None:
-            mats.append((score, str(code).strip().upper()))
-    material_code = min(mats, key=lambda x: x[0])[1] if mats else None
+    material_code = None
+    if surf_field is not None:
+        mats = []
+        for c in contrib:
+            code = c[0].get(surf_field)
+            score = profile.surface_score(code)
+            if score is not None:
+                mats.append((score, str(code).strip().upper()))
+        material_code = min(mats, key=lambda x: x[0])[1] if mats else None
 
-    # Divergence: compare ONE representative per inventory SIDE (the largest-area
-    # polygon on each side — the real flanking sidewalk), not a raw max−min over
-    # every matched fragment. A tiny corner fragment from a perpendicular street
-    # is within the buffer too, so raw spread wildly over-flags; the per-side
-    # largest-area pick is robust to that contamination while still catching a
-    # genuine left-vs-right disagreement.
-    by_side: dict[str, tuple] = {}
-    for c in contrib:
-        side = str(c[0].get("SIDE")).upper()
-        if side not in by_side or c[5] > by_side[side][5]:
-            by_side[side] = c
-    side_reps = sorted(by_side.values(), key=lambda c: c[5], reverse=True)[:2]
+    # Divergence: compare ONE representative per inventory SIDE (the largest-weight
+    # feature on each side — the real flanking sidewalk), not a raw max−min over
+    # every matched fragment. A tiny corner fragment from a perpendicular street is
+    # within the buffer too, so raw spread wildly over-flags; the per-side
+    # largest-weight pick is robust to that while still catching a genuine
+    # left-vs-right disagreement. When the inventory has no side label
+    # (``side_field is None``), fall back to the two largest-weight contributors.
+    if profile.side_field is not None:
+        by_side: dict[str, tuple] = {}
+        for c in contrib:
+            side = str(c[0].get(profile.side_field)).upper()
+            if side not in by_side or c[3] > by_side[side][3]:
+                by_side[side] = c
+        side_reps = sorted(by_side.values(), key=lambda c: c[3], reverse=True)[:2]
+    else:
+        side_reps = sorted(contrib, key=lambda c: c[3], reverse=True)[:2]
+
     if len(side_reps) >= 2:
         a, b = side_reps[0], side_reps[1]
-        sci_spread = abs(a[4] - b[4]) * 100.0  # in SCI points
-        ma = _surface_label_to_score(a[0].get(SWK_SURFACE_FIELD))
-        mb = _surface_label_to_score(b[0].get(SWK_SURFACE_FIELD))
+        cond_spread = abs(a[2] - b[2])  # normalised [0, 1] condition units
+        ma = profile.surface_score(a[0].get(surf_field)) if surf_field else None
+        mb = profile.surface_score(b[0].get(surf_field)) if surf_field else None
         material_divergent = (
             ma is not None and mb is not None
-            and str(a[0].get(SWK_SURFACE_FIELD)).strip().upper()
-            != str(b[0].get(SWK_SURFACE_FIELD)).strip().upper()
+            and str(a[0].get(surf_field)).strip().upper()
+            != str(b[0].get(surf_field)).strip().upper()
         )
     else:
-        sci_spread = 0.0
+        cond_spread = 0.0
         material_divergent = False
 
     # Freshest contributing date + inspected flag — these drive _date_confidence
-    # and the 1970-placeholder branch in _build_canonical_schema. Because phantom
-    # rows are already excluded, any surviving pre-2000 row was inspected=yes, so
-    # the placeholder branch will not wrongly drop the aggregate.
+    # and the phantom re-check in _build_canonical_schema. Because phantom rows are
+    # already excluded, the re-check will not wrongly drop the aggregate.
     def _dt(c):
         try:
-            return pd.to_datetime(c[2])
+            return pd.to_datetime(c[1])
         except Exception:
             return pd.Timestamp.min
 
-    agg_date = max(contrib, key=_dt)[2]
-    inspected_val = "yes" if any(str(c[3]).lower() == "yes" for c in contrib) else None
+    agg_date = max(contrib, key=_dt)[1]
+    inspected_val = "yes" if any(
+        str(c[0].get("inspected")).lower() == "yes" for c in contrib
+    ) else None
 
-    divergent = (sci_spread > DIVERGENCE_THRESHOLD_SCI) or material_divergent
+    divergent = (cond_spread > profile.divergence_threshold) or material_divergent
 
-    return {
-        SWK_CONDITION_FIELD: round(sci_mean01 * 100.0, 1),
-        SWK_SURFACE_FIELD:   material_code,
-        SWK_WIDTH_FIELD:     width_mean,
-        SWK_DATE_FIELD:      agg_date,
-        "inspected":         inspected_val,
-        "_sci_divergent":    divergent,
-        "_n_valid":          len(contrib),
-        "_sci_spread":       round(sci_spread, 1),
+    agg: dict = {
+        cond_field:        profile.aggregate_condition(cond_mean01),
+        "inspected":       inspected_val,
+        "_cond_divergent": divergent,
+        "_n_valid":        len(contrib),
+        "_cond_spread":    round(cond_spread, 4),
     }
+    if surf_field is not None:
+        agg[surf_field] = material_code
+    if width_field is not None:
+        agg[width_field] = width_mean
+    if date_field is not None:
+        agg[date_field] = agg_date
+    return agg
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +608,7 @@ def _aggregate_city_candidates(rows: gpd.GeoDataFrame) -> dict | None:
 def _build_spatial_index(
     G: nx.MultiDiGraph,
     sidewalks: gpd.GeoDataFrame,
+    profile: CityInventoryProfile = DEFAULT_PROFILE,
 ) -> dict[tuple, dict]:
     """Bulk spatial join: map each OSM edge to an aggregate of its matched sidewalks.
 
@@ -650,9 +633,9 @@ def _build_spatial_index(
     edges_gdf = edges_gdf.reset_index()    # columns: u, v, key, geometry, ...
     edges_gdf["_edge_id"] = list(zip(edges_gdf["u"], edges_gdf["v"], edges_gdf["key"]))
 
-    print(f"Reprojecting to {METRIC_CRS} for distance calculations ...")
-    edges_metric = edges_gdf[["_edge_id", "geometry"]].to_crs(METRIC_CRS)
-    swk_metric   = sidewalks.to_crs(METRIC_CRS).copy()
+    print(f"Reprojecting to {profile.metric_crs} for distance calculations ...")
+    edges_metric = edges_gdf[["_edge_id", "geometry"]].to_crs(profile.metric_crs)
+    swk_metric   = sidewalks.to_crs(profile.metric_crs).copy()
     swk_metric["_swk_idx"] = swk_metric.index   # preserve original index
 
     # Buffer edges — anything within SPATIAL_JOIN_CUTOFF_M matches
@@ -680,7 +663,7 @@ def _build_spatial_index(
         swk_rows = swk_metric.loc[swk_metric["_swk_idx"].isin(group["_swk_idx"].values)]
         if swk_rows.empty:
             continue
-        agg = _aggregate_city_candidates(swk_rows)
+        agg = _aggregate_city_candidates(swk_rows, profile)
         if agg is None:
             continue
         best_matches[cast(tuple, edge_id)] = agg
@@ -688,8 +671,10 @@ def _build_spatial_index(
     n_matched = len(best_matches)
     n_total   = len(edges_gdf)
     n_multi   = sum(1 for a in best_matches.values() if a["_n_valid"] >= 2)
-    n_div     = sum(1 for a in best_matches.values() if a["_sci_divergent"])
-    spreads   = sorted(a["_sci_spread"] for a in best_matches.values() if a["_n_valid"] >= 2)
+    n_div     = sum(1 for a in best_matches.values() if a["_cond_divergent"])
+    # Spread is normalised [0,1] condition units; print in "points" (×100) so the
+    # numbers read like Boston's old 0–100 SCI-point spread for continuity.
+    spreads   = sorted(a["_cond_spread"] for a in best_matches.values() if a["_n_valid"] >= 2)
     print(f"  Matched {n_matched}/{n_total} edges ({100*n_matched//max(n_total,1)}%) "
           f"to sidewalk inventory features")
     if spreads:
@@ -697,7 +682,8 @@ def _build_spatial_index(
         p90 = spreads[min(len(spreads) - 1, int(len(spreads) * 0.9))]
         print(f"  Both-sides aggregate: {n_multi} multi-candidate edges "
               f"({100*n_multi//max(n_matched,1)}%), {n_div} divergent "
-              f"({100*n_div//max(n_matched,1)}%); SCI spread median={p50:.0f} p90={p90:.0f}")
+              f"({100*n_div//max(n_matched,1)}%); condition spread (×100) "
+              f"median={p50*100:.0f} p90={p90*100:.0f}")
     return best_matches
 
 
@@ -710,6 +696,7 @@ def _build_canonical_schema(
     fallback:   Any,           # FallbackResult
     city_row:   dict | None,   # aggregated record from _aggregate_city_candidates
     env:        dict | None = None,
+    profile:    CityInventoryProfile = DEFAULT_PROFILE,
 ) -> dict:
     """Produce the canonical attribute dict for one edge.
 
@@ -734,41 +721,39 @@ def _build_canonical_schema(
 
     # --- Override with city data if available ---
     if city_row is not None:
-        # 1970-placeholder date + inspected=null means the sidewalk was never
-        # field-surveyed; only the polygon geometry exists.  Skip city data so
-        # we fall through to the OSM-tag tier rather than using a phantom match.
-        raw_date_check = city_row.get(SWK_DATE_FIELD)
-        try:
-            _year = pd.to_datetime(raw_date_check).year  # type: ignore[arg-type]
-        except Exception:
-            _year = None
-        if _year is not None and _year < 2000 and city_row.get("inspected") is None:
+        # A phantom aggregate (e.g. Boston's 1970-placeholder date + inspected
+        # null, or Austin's PENDING ASSESSMENT) means the sidewalk was never
+        # field-surveyed; only the geometry exists.  Skip city data so we fall
+        # through to the OSM-tag tier rather than using a phantom match. (Phantom
+        # candidates are already excluded inside the aggregate, so this is a
+        # belt-and-braces re-check on the synthetic aggregate record.)
+        if profile.is_phantom(city_row):
             city_row = None
 
     if city_row is not None:
-        raw_cond   = city_row.get(SWK_CONDITION_FIELD)
-        raw_date   = city_row.get(SWK_DATE_FIELD)
-        raw_width  = city_row.get(SWK_WIDTH_FIELD)
-        raw_surf   = city_row.get(SWK_SURFACE_FIELD)
+        raw_cond   = city_row.get(profile.condition_field)
+        raw_date   = city_row.get(profile.date_field) if profile.date_field else None
+        raw_width  = city_row.get(profile.width_field) if profile.width_field else None
+        raw_surf   = city_row.get(profile.surface_field) if profile.surface_field else None
 
-        city_quality = _condition_to_score(raw_cond)
+        city_quality = profile.condition_to_score(raw_cond)
         city_conf    = _city_surface_confidence(raw_date, highway_score, city_quality)
 
         # Down-weight confidence where the two sides genuinely disagree (the
         # aggregate is then a less trustworthy single value for the edge).
-        if city_row.get("_sci_divergent"):
+        if city_row.get("_cond_divergent"):
             city_conf = round(city_conf * DIVERGENCE_PENALTY, 4)
 
         if city_quality is not None:
-            surface_score      = city_quality   # SCI/100 — structural condition
+            surface_score      = city_quality   # normalised condition — structural
             surface_confidence = city_conf
             data_source        = "city_inventory"
 
-        city_surf_score = _surface_label_to_score(raw_surf)
+        city_surf_score = profile.surface_score(raw_surf)
         if city_surf_score is not None:
-            surface_material_score = city_surf_score  # MATERIAL code → intrinsic comfort
+            surface_material_score = city_surf_score  # material → intrinsic comfort
         else:
-            surface_material_score = None             # OT or unknown material — don't fabricate
+            surface_material_score = None             # unknown material — don't fabricate
 
         sidewalk_condition   = str(raw_cond) if raw_cond is not None else None
         try:
@@ -846,12 +831,13 @@ def _build_canonical_schema(
 def build_edge_schema(
     G:        nx.MultiDiGraph,
     sidewalks: gpd.GeoDataFrame,
+    profile:  CityInventoryProfile = DEFAULT_PROFILE,
 ) -> nx.MultiDiGraph:
     """Enrich every edge in G with the canonical walkability schema.
 
     Modifies G in-place and returns it.
     """
-    city_matches = _build_spatial_index(G, sidewalks)
+    city_matches = _build_spatial_index(G, sidewalks, profile)
     env_matches  = build_environment_index(G)
 
     print("Enriching edges ...")
@@ -869,7 +855,7 @@ def build_edge_schema(
         fallback  = get_fallback(resolved, G=G, u=u, v=v, key=key)
         city_row  = city_matches.get((u, v, key))
         env       = env_matches.get((u, v, key))
-        schema    = _build_canonical_schema(data, fallback, city_row, env)
+        schema    = _build_canonical_schema(data, fallback, city_row, env, profile)
 
         G[u][v][key].update(schema)
 
@@ -909,26 +895,34 @@ def save_graph(G: nx.MultiDiGraph, path: Path = ENRICHED_PATH) -> None:
 # ---------------------------------------------------------------------------
 
 def build(
-    graph_path:     Path = GRAPH_PATH,
-    inventory_path: Path = INVENTORY_PATH,
-    output_path:    Path = ENRICHED_PATH,
+    graph_path:     Path | None = None,
+    inventory_path: Path | None = None,
+    output_path:    Path | None = None,
     force:          bool = False,
+    profile:        CityInventoryProfile = DEFAULT_PROFILE,
 ) -> nx.MultiDiGraph:
     """Full pipeline: load → enrich → save → return enriched graph.
+
+    Paths default to the profile's own I/O (``profile.graph_path`` etc.), so
+    ``build(profile=AUSTIN_PROFILE)`` is fully wired once Austin's inputs exist.
 
     If *output_path* already exists and *force* is False, the cached
     enriched graph is returned immediately without rebuilding.  Pass
     ``force=True`` (or ``--force`` on the CLI) after changing enrichment
     logic so the cache is regenerated.
     """
+    graph_path     = graph_path if graph_path is not None else profile.graph_path
+    inventory_path = inventory_path if inventory_path is not None else profile.inventory_path
+    output_path    = output_path if output_path is not None else profile.enriched_path
+
     if not force and output_path.exists():
         print(f"Enriched graph already cached at {output_path} — loading it.")
         print("  Pass force=True (or --force on the CLI) to rebuild.")
         return load_graph(output_path)
 
     G         = load_graph(graph_path)
-    sidewalks = load_sidewalk_inventory(inventory_path)
-    G         = build_edge_schema(G, sidewalks)
+    sidewalks = load_sidewalk_inventory(inventory_path, profile)
+    G         = build_edge_schema(G, sidewalks, profile)
     save_graph(G, output_path)
     return G
 
@@ -985,8 +979,9 @@ def build_dev_subset(
     region:         str = "beacon_hill",
     *,
     radius_m:       float | None = None,
-    inventory_path: Path  = INVENTORY_PATH,
+    inventory_path: Path | None = None,
     force:          bool  = False,
+    profile:        CityInventoryProfile = DEFAULT_PROFILE,
 ) -> nx.MultiDiGraph:
     """Build and enrich the edges within a radius of a named region's centre.
 
@@ -1020,7 +1015,7 @@ def build_dev_subset(
     print(f"Building dev region '{region}': {cfg['note']}")
     print(f"Clipping graph to {radius_m:.0f} m network radius around "
           f"({center_lat}, {center_lon}) ...")
-    G_full      = load_graph(GRAPH_PATH)
+    G_full      = load_graph(profile.graph_path)
     center_node = min(
         G_full.nodes(data=True),
         key=lambda n: (n[1]["y"] - center_lat) ** 2 + (n[1]["x"] - center_lon) ** 2,
@@ -1030,8 +1025,8 @@ def build_dev_subset(
     print(f"  Subset: {G_subset.number_of_nodes()} nodes, {n_edges} edges "
           f"({100 * n_edges // G_full.number_of_edges()}% of full graph)")
 
-    sidewalks = load_sidewalk_inventory(inventory_path)
-    G_subset  = build_edge_schema(G_subset, sidewalks)
+    sidewalks = load_sidewalk_inventory(inventory_path, profile)
+    G_subset  = build_edge_schema(G_subset, sidewalks, profile)
     save_graph(G_subset, output_path)
     return G_subset
 
@@ -1040,7 +1035,11 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Build the enriched Boston walk graph."
+        description="Build the enriched walk graph for a city."
+    )
+    parser.add_argument(
+        "--city", default=DEFAULT_PROFILE.name, choices=sorted(CITY_PROFILES),
+        help=f"City inventory profile to build (default: {DEFAULT_PROFILE.name}).",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -1064,11 +1063,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    profile = CITY_PROFILES[args.city]
+
     if args.list_regions:
         print("Available dev regions:")
         for name, cfg in DEV_REGIONS.items():
             print(f"  {name:22} {cfg['note']}")
     elif args.dev:
-        build_dev_subset(region=args.region, radius_m=args.radius, force=args.force)
+        build_dev_subset(region=args.region, radius_m=args.radius,
+                         force=args.force, profile=profile)
     else:
-        build(force=args.force)
+        build(force=args.force, profile=profile)
