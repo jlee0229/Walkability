@@ -253,13 +253,19 @@ behaviours, several of them hard-won — **don't regress**:
   widget renders (default `full`).
 - **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
   fought st_folium reruns and added clutter). Origin/destination are addresses,
-  geocoded by `geocode()`, Boston-biased and `@st.cache_data`-wrapped. **Primary is
+  geocoded by `geocode()`, metro-biased and `@st.cache_data`-wrapped. **Primary is
   Photon** (komoot — OSM-based, no key, tolerant of server/cloud use); **Nominatim is
   a timed fallback**. Nominatim's public server rate-limits/blocks shared cloud IPs
   (Streamlit Community Cloud), which used to **hang** the deployed app on "Reading the
   streets…" via a no-timeout `osmnx.geocode` fallback — that fallback was removed and
   every call now has a hard timeout, so geocoding can never spin forever (worst case →
-  "couldn't find that address").
+  "couldn't find that address"). **No town is ever appended to the query** (an old
+  ", Boston" append made hull-town addresses ungeocodable); disambiguation of bare
+  names comes from Photon's hard-filtering `bbox` = `_METRO_BBOX`, which mirrors
+  `config.PLACES` and the PMTiles cut — **update all three together** when coverage
+  widens. A geocode landing outside `_METRO_BBOX` (possible via the unbounded
+  Nominatim fallback) gets a specific "outside the covered area" error via
+  `in_coverage()` instead of silently snapping to the graph edge.
 - **`alpha` + per-factor weight sliders.** The 0–100 "how you'll walk" slider maps
   to `alpha = slider/100·5`. Weights thread through `find_routes` → `edge_cost`/
   `_build_route` → `edge_walkability`; untouched, the `FACTOR_WEIGHTS` object itself
