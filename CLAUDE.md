@@ -233,6 +233,14 @@ behaviours, several of them hard-won — **don't regress**:
   (Streamlit Community Cloud, which does NOT expose secrets as env vars), then the
   code default — so a deploy needs **no** config at all. To re-vendor a lib,
   re-download it into `frontend/vendor/` and bump the pin in this note + index.html.
+  The `routes` GeoJSON source is declared with **`tolerance: 0, buffer: 512`**
+  (`main.js::addRouteLayers`) — **don't drop these**: routes have long straight
+  spans with no intermediate vertices (bridge crossings, Esplanade footways), and
+  geojson-vt's default per-zoom simplification + narrow tile buffer would drop a
+  whole stretch (line + shared halo) in a mid-zoom band (verified: a Beacon St
+  segment vanished at z14–14.5, restored by these opts). `_route_lonlat`
+  (`streamlit_app.py`) also de-dupes the coincident vertex where consecutive edges
+  meet, for the same reason (coincident points confuse GL clipping).
 - **Graph load once + download-on-startup** (`@st.cache_resource`, keyed by path).
   The graph files are too big for the repo, so `get_graph` fetches any missing file
   from a **GitHub Release** (`_GRAPH_RELEASE`, tag `data-v1`) via streaming `requests`
@@ -245,13 +253,19 @@ behaviours, several of them hard-won — **don't regress**:
   widget renders (default `full`).
 - **Address-only input.** Click-on-map and lat/lon entry were **removed** (they
   fought st_folium reruns and added clutter). Origin/destination are addresses,
-  geocoded by `geocode()`, Boston-biased and `@st.cache_data`-wrapped. **Primary is
+  geocoded by `geocode()`, metro-biased and `@st.cache_data`-wrapped. **Primary is
   Photon** (komoot — OSM-based, no key, tolerant of server/cloud use); **Nominatim is
   a timed fallback**. Nominatim's public server rate-limits/blocks shared cloud IPs
   (Streamlit Community Cloud), which used to **hang** the deployed app on "Reading the
   streets…" via a no-timeout `osmnx.geocode` fallback — that fallback was removed and
   every call now has a hard timeout, so geocoding can never spin forever (worst case →
-  "couldn't find that address").
+  "couldn't find that address"). **No town is ever appended to the query** (an old
+  ", Boston" append made hull-town addresses ungeocodable); disambiguation of bare
+  names comes from Photon's hard-filtering `bbox` = `_METRO_BBOX`, which mirrors
+  `config.PLACES` and the PMTiles cut — **update all three together** when coverage
+  widens. A geocode landing outside `_METRO_BBOX` (possible via the unbounded
+  Nominatim fallback) gets a specific "outside the covered area" error via
+  `in_coverage()` instead of silently snapping to the graph edge.
 - **`alpha` + per-factor weight sliders.** The 0–100 "how you'll walk" slider maps
   to `alpha = slider/100·5`. Weights thread through `find_routes` → `edge_cost`/
   `_build_route` → `edge_walkability`; untouched, the `FACTOR_WEIGHTS` object itself
