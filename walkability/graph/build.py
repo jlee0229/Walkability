@@ -543,8 +543,17 @@ def _aggregate_city_candidates(
     # every matched fragment. A tiny corner fragment from a perpendicular street is
     # within the buffer too, so raw spread wildly over-flags; the per-side
     # largest-weight pick is robust to that while still catching a genuine
-    # left-vs-right disagreement. When the inventory has no side label
-    # (``side_field is None``), fall back to the two largest-weight contributors.
+    # left-vs-right disagreement.
+    #
+    # This is only meaningful when the inventory labels the SIDE. Without it
+    # (``side_field is None``, e.g. Austin's line-segment inventory), a single
+    # street edge matches MANY short segments strung ALONG its length — "top-2"
+    # would compare two points on the same side with genuinely different
+    # condition, i.e. along-street variance, not side disagreement (it flagged
+    # ~70% of Austin edges). That is a different (and today unused) signal, so we
+    # don't fabricate a side-divergence penalty from it.
+    cond_spread = 0.0
+    material_divergent = False
     if profile.side_field is not None:
         by_side: dict[str, tuple] = {}
         for c in contrib:
@@ -552,22 +561,16 @@ def _aggregate_city_candidates(
             if side not in by_side or c[3] > by_side[side][3]:
                 by_side[side] = c
         side_reps = sorted(by_side.values(), key=lambda c: c[3], reverse=True)[:2]
-    else:
-        side_reps = sorted(contrib, key=lambda c: c[3], reverse=True)[:2]
-
-    if len(side_reps) >= 2:
-        a, b = side_reps[0], side_reps[1]
-        cond_spread = abs(a[2] - b[2])  # normalised [0, 1] condition units
-        ma = profile.surface_score(a[0].get(surf_field)) if surf_field else None
-        mb = profile.surface_score(b[0].get(surf_field)) if surf_field else None
-        material_divergent = (
-            ma is not None and mb is not None
-            and str(a[0].get(surf_field)).strip().upper()
-            != str(b[0].get(surf_field)).strip().upper()
-        )
-    else:
-        cond_spread = 0.0
-        material_divergent = False
+        if len(side_reps) >= 2:
+            a, b = side_reps[0], side_reps[1]
+            cond_spread = abs(a[2] - b[2])  # normalised [0, 1] condition units
+            ma = profile.surface_score(a[0].get(surf_field)) if surf_field else None
+            mb = profile.surface_score(b[0].get(surf_field)) if surf_field else None
+            material_divergent = (
+                ma is not None and mb is not None
+                and str(a[0].get(surf_field)).strip().upper()
+                != str(b[0].get(surf_field)).strip().upper()
+            )
 
     # Freshest contributing date + inspected flag — these drive _date_confidence
     # and the phantom re-check in _build_canonical_schema. Because phantom rows are
