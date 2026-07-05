@@ -164,7 +164,16 @@
   // Mirrors the folium build_route_layer parity.
   function addRouteLayers() {
     if (map.getSource("routes")) return;
-    map.addSource("routes", { type: "geojson", data: EMPTY_FC });
+    // tolerance:0 + a wide buffer stop the geojson-vt re-tiler from dropping a
+    // STRETCH of a route in a mid-zoom band: a route has long straight spans with
+    // no intermediate vertices (e.g. a 660 m bridge crossing, 150-200 m Esplanade
+    // footways), and at some zooms a tile whose bounds+buffer hold none of that
+    // span's vertices clips the piece away — both the coloured line and its shared
+    // halo vanish together (see mapbox-gl-js#8635, MapLibre large-data guide).
+    // tolerance:0 disables per-zoom vertex simplification; buffer:512 keeps a line
+    // that only passes THROUGH a tile. Free here — we render a handful of features.
+    var routeSrc = { type: "geojson", data: EMPTY_FC, tolerance: 0, buffer: 512 };
+    map.addSource("routes", routeSrc);
     map.addSource("points", { type: "geojson", data: EMPTY_FC });
     var round = { "line-cap": "round", "line-join": "round" };
     // Alternatives: dashed + faint, so the solid haloed focused route is unmistakable.

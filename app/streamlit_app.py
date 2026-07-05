@@ -850,10 +850,17 @@ _MAPLIBRE_COMPONENT = components.declare_component(
 
 
 def _route_lonlat(G, r):
-    """Full edge geometry of a route as GeoJSON [lon, lat] coords."""
+    """Full edge geometry of a route as GeoJSON [lon, lat] coords.
+
+    Consecutive edges share a node, so each edge's geometry repeats the previous
+    edge's last coord — dropping the duplicate keeps the LineString clean (coincident
+    vertices confuse GL simplification/clipping and are pure bloat)."""
     coords = []
     for u, v, key in r.edges:
-        coords += [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+        for lat, lon in _edge_coords(G, u, v, key):
+            pt = [lon, lat]
+            if not coords or coords[-1] != pt:
+                coords.append(pt)
     return coords
 
 

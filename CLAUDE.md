@@ -233,6 +233,14 @@ behaviours, several of them hard-won — **don't regress**:
   (Streamlit Community Cloud, which does NOT expose secrets as env vars), then the
   code default — so a deploy needs **no** config at all. To re-vendor a lib,
   re-download it into `frontend/vendor/` and bump the pin in this note + index.html.
+  The `routes` GeoJSON source is declared with **`tolerance: 0, buffer: 512`**
+  (`main.js::addRouteLayers`) — **don't drop these**: routes have long straight
+  spans with no intermediate vertices (bridge crossings, Esplanade footways), and
+  geojson-vt's default per-zoom simplification + narrow tile buffer would drop a
+  whole stretch (line + shared halo) in a mid-zoom band (verified: a Beacon St
+  segment vanished at z14–14.5, restored by these opts). `_route_lonlat`
+  (`streamlit_app.py`) also de-dupes the coincident vertex where consecutive edges
+  meet, for the same reason (coincident points confuse GL clipping).
 - **Graph load once + download-on-startup** (`@st.cache_resource`, keyed by path).
   The graph files are too big for the repo, so `get_graph` fetches any missing file
   from a **GitHub Release** (`_GRAPH_RELEASE`, tag `data-v1`) via streaming `requests`
