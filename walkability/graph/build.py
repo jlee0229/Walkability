@@ -575,13 +575,15 @@ def _aggregate_city_candidates(
     # Freshest contributing date + inspected flag — these drive _date_confidence
     # and the phantom re-check in _build_canonical_schema. Because phantom rows are
     # already excluded, the re-check will not wrongly drop the aggregate.
-    def _dt(c):
-        try:
-            return pd.to_datetime(c[1])
-        except Exception:
-            return pd.Timestamp.min
-
-    agg_date = max(contrib, key=_dt)[1]
+    #
+    # Parse defensively: coerce (bad values → NaT), normalise tz with utc=True, and
+    # compare by epoch value so tz-aware/naive/NaT/None can't break max() — Austin's
+    # assessment_date is tz-aware UTC with occasional nulls (Boston's dates all parse
+    # cleanly, so this picks the same winner and leaves Boston byte-identical).
+    # agg_date is the raw date of the latest VALID contributor, or None if none parse.
+    _dated = [(pd.to_datetime(c[1], errors="coerce", utc=True), c[1]) for c in contrib]
+    _valid = [(ts, raw) for ts, raw in _dated if pd.notna(ts)]
+    agg_date = max(_valid, key=lambda x: x[0].value)[1] if _valid else None
     inspected_val = "yes" if any(
         str(c[0].get("inspected")).lower() == "yes" for c in contrib
     ) else None
