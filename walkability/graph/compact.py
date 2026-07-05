@@ -200,6 +200,8 @@ def _main() -> None:
     )
 
     ap = argparse.ArgumentParser(description="Build slim runtime graph pickles.")
+    ap.add_argument("--city", default=None,
+                    help="city profile name (compact that city's full enriched graph)")
     ap.add_argument("--dev", action="store_true", help="convert the dev subset(s)")
     ap.add_argument("--region", default=None, help="dev region name (implies --dev)")
     ap.add_argument("--all", action="store_true",
@@ -207,7 +209,10 @@ def _main() -> None:
     args = ap.parse_args()
 
     targets: list[Path] = []
-    if args.all:
+    if args.city:
+        from walkability.graph.inventory import CITY_PROFILES
+        targets.append(CITY_PROFILES[args.city].enriched_path)
+    elif args.all:
         targets.append(ENRICHED_PATH)
         targets += [dev_region_path(r) for r in DEV_REGIONS]
     elif args.region:
