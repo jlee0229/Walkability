@@ -8,17 +8,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install package in editable mode (required before running anything)
 pip install -e .
 
-# Download the base OSM walk graph for Boston (run once)
-python walkability/graph/download.py
+# Download the base OSM walk graph (run once). --city selects a CityProfile
+# (default boston); the extent + output path come from the profile.
+python -m walkability.graph.download                 # boston
+python -m walkability.graph.download --city austin
 
 # Download the OSM feature inputs for the environment (safety) factor: arterials,
-# buildings, POIs, open space, landuse=industrial, and all roads → data/osm/*.gpkg.
+# buildings, POIs, open space, landuse=industrial, and all roads → data/osm/<city>_*.gpkg.
 # Missing core files disable the factor; missing landuse/roads just disable their
-# (optional) sub-signal.
-python walkability/graph/download_environment.py
+# (optional) sub-signal. --city must match the graph's extent.
+python -m walkability.graph.download_environment                 # boston
+python -m walkability.graph.download_environment --city austin
 
-# Build the full enriched graph (skips rebuild if output already exists)
+# Build the full enriched graph (skips rebuild if output already exists).
+# --city selects the CityProfile (schema, CRS, I/O paths); default boston.
 python -m walkability.graph.build
+python -m walkability.graph.build --city austin
 
 # Force a full rebuild after changing enrichment logic
 python -m walkability.graph.build --force
@@ -182,15 +187,20 @@ These are dev/QA scripts, not part of the package. They import each other as sib
 
 All **query-time, no rebuild** (no new edge fields). `find_routes(..., refine_sides=False)` disables phase 2 for A/B comparison. Skipped at `alpha=0` (the corridor is already the shortest path, preserving the length floor). **The single tuning knob is `TUBE_WIDTH_M`** (too narrow → can't reach the needed side on a wide street; too wide → phase 2 can jump to a shorter parallel street). Tuning it or `REFINE_*` is query-time but **re-baseline `notebooks/problem_routes_baseline.json`**.
 
-### City inventory profiles (`walkability/graph/inventory.py`)
+### City profiles (`walkability/graph/inventory.py`)
 
-Every municipality's sidewalk inventory has different column names, a different
-condition scale, material vocabulary, "never surveyed" marker, and metric CRS.
-All of that municipality-specific detail lives in a **`CityInventoryProfile`**
-(`walkability/graph/inventory.py`) — the generic aggregation/schema logic in
-`build.py` reads from a profile it is passed (`build(profile=…)`,
-`--city {boston,austin}`). **Adding a city is adding a profile there**, not
-editing `build.py`. A profile holds: I/O paths + metric CRS; source field names
+Every municipality has its own OSM extent, sidewalk-inventory schema (column
+names, condition scale, material vocabulary, "never surveyed" marker), metric
+CRS, and set of environment-feature layers. All of that lives in a single
+**`CityProfile`** (`walkability/graph/inventory.py`) — the entire pipeline
+(`download.py` → `download_environment.py` → `environment.py` → `build.py`) reads
+from the profile it is passed (`--city {boston,austin}`). **Adding a city is
+adding a profile there**, nothing else. Beyond the inventory fields, a profile
+carries `places` (the osmnx `graph_from_place`/`features_from_place` query) and
+`env_layer_path(layer)` → `data/osm/<name>_<layer>.gpkg`, so the download scripts
+and `environment.py` resolve a city's graph + six feature GeoPackages by name.
+`CityInventoryProfile` remains as a backward-compatible alias. A profile also
+holds: I/O paths + metric CRS; source field names
 (`condition_field`/`surface_field`/`width_field`/`date_field`/`area_field`/
 `side_field`); scale adapters (`condition_to_score`: native → [0,1], and its
 inverse `aggregate_condition` for the audit round-trip); `material_map` +

@@ -1,19 +1,20 @@
-"""City sidewalk-inventory profiles.
+"""Per-city profiles for the walkability pipeline.
 
 Every municipality publishes its sidewalk inventory with different column names,
-a different condition scale (Boston SCI is 0–100; Austin ``rating_final`` is a 1–5
-ordinal), a different material vocabulary, a different "never surveyed" marker,
-and a different metric CRS. Rather than scatter those assumptions through
-``build.py``, a :class:`CityInventoryProfile` captures everything municipality-
-specific in one place, and the generic aggregation / schema logic in ``build.py``
-reads from a profile. **Adding a city is adding a profile here** — the pipeline
-code does not change.
+a different condition scale (Boston SCI is 0–100; Austin's rating is a 1–5
+ordinal, and *inverted*), a different material vocabulary, a different "never
+surveyed" marker, and a different metric CRS; it also has its own OSM query
+extent and its own set of environment-feature layers. Rather than scatter those
+assumptions through ``build.py`` / ``environment.py`` / the download scripts, a
+:class:`CityProfile` captures everything municipality-specific in one place, and
+the generic pipeline reads from a profile. **Adding a city is adding a profile
+here** — the pipeline code does not change.
 
 The one hard rule: :data:`BOSTON_PROFILE` must reproduce the pre-refactor Boston
-behaviour *exactly* (same arithmetic, same rounding), so the existing enriched
-graph and ``problem_routes_baseline.json`` stay valid without a ``--force``
-rebuild. The condition round-trip (normalised mean → native audit value →
-re-normalised in the schema) is preserved for that reason: see
+behaviour *exactly* (same arithmetic, same rounding, same file paths), so the
+existing enriched graph and ``problem_routes_baseline.json`` stay valid without a
+``--force`` rebuild. The condition round-trip (normalised mean → native audit
+value → re-normalised in the schema) is preserved for that reason: see
 ``aggregate_condition`` below.
 """
 
@@ -25,7 +26,7 @@ from typing import Any, Callable, Mapping
 
 import pandas as pd
 
-from walkability.config import DATA_DIR, OSM_DIR
+from walkability.config import DATA_DIR, OSM_DIR, PLACES
 from walkability.scoring.weights import SURFACE_SCORES
 
 
@@ -89,17 +90,30 @@ def _boston_is_phantom(row: Mapping[str, Any]) -> bool:
     return year is not None and year < 2000 and insp_null
 
 
-def _austin_is_phantom(row: Mapping[str, Any]) -> bool:
-    """Austin: ``functional_condition == "PENDING ASSESSMENT"`` marks a segment
-    in the network that has not been assessed yet — skip it.
+# Austin ``pedestrian_facility_type`` values for facilities that do not
+# physically exist yet (planned / potential). They carry no real surface, so they
+# are treated as phantom even if a stray rating is present. EXISTING_SIDEWALK,
+# DRIVEWAY, SHARED_USE_PATH, SHARED_STREET, PROTECTED_STREET_PATH are real
+# walking surfaces and are kept.
+_AUSTIN_NONEXISTENT_FACILITY = {
+    "POTENTIAL_SIDEWALK", "PLANNED_SIDEWALK", "PLANNED_SHARED_STREET",
+}
 
-    TODO(austin-verify): confirm PENDING rows also carry a null ``rating_final``
-    (in which case ``condition_to_score`` already drops them and this is a
-    belt-and-braces guard). Tolerates a missing key (returns False), so it is
-    safe to call on the synthetic aggregate record too.
+
+def _austin_is_phantom(row: Mapping[str, Any]) -> bool:
+    """Austin: skip segments that were never field-surveyed or don't yet exist.
+
+    ``functional_condition == "PENDING ASSESSMENT"`` (84.7k rows) marks a segment
+    not yet assessed; ``pedestrian_facility_type`` in the planned/potential set
+    marks a facility that does not physically exist. Both carry no usable surface
+    condition. Tolerates missing keys (returns False), so it is safe to call on
+    the synthetic aggregate record too (where neither key is present).
     """
-    fc = row.get("functional_condition")
-    return str(fc).strip().upper() == "PENDING ASSESSMENT" if fc is not None else False
+    fc = str(row.get("functional_condition") or "").strip().upper()
+    if fc == "PENDING ASSESSMENT":
+        return True
+    pft = str(row.get("pedestrian_facility_type") or "").strip().upper()
+    return pft in _AUSTIN_NONEXISTENT_FACILITY
 
 
 # Boston DPW material codes → OSM surface labels (keys in SURFACE_SCORES).
@@ -113,17 +127,28 @@ _BOSTON_MATERIAL_MAP: dict[str, str] = {
     "GR":  "paving_stones",  # Granite slab (similar walking quality to pavers)
 }
 
-# Austin ``sidewalk_surface`` tokens → OSM surface labels.
-# TODO(austin-verify): confirm the full vocabulary on download (the portal
-# preview showed CONCRETE / EXPOSED_AGGREGATE / ASPHALT / PAVER-BRICK "and
-# others"). Unknown tokens fall through to None (never over-score).
+# Austin ``sidewalk_surface`` tokens → OSM surface labels (keys in SURFACE_SCORES).
+# Full vocabulary confirmed from the live vchz-d9ng API (counts, most→least
+# common): CONCRETE 255687, EXPOSED_AGGREGATE 11746, ASPHALT 997, PAVER-BRICK 577,
+# CRUSHED_STONE 140, PAVER-CONCRETE 83, COLORED 69, PAVER-GRANITE 61,
+# PAVER-SANDSTONE 43, EXPERIMENTAL 29, STAMPED 9, PLASTIC_PANEL 4,
+# PERVIOUS_CONCRETE 2, RUBBERIZED 1 (+82823 null). Explicit mapping is required
+# (the partial-match fallback in surface_score would e.g. score PAVER-CONCRETE as
+# concrete 0.9 instead of paving_stones 0.7). Unmapped/experimental → None so
+# they never over-score.
 _AUSTIN_MATERIAL_MAP: dict[str, str] = {
-    "CONCRETE":          "concrete",
+    "CONCRETE":          "concrete",      # 0.9
+    "PERVIOUS_CONCRETE": "concrete",
     "EXPOSED_AGGREGATE": "concrete",      # aggregate-finish concrete — walks like concrete
-    "ASPHALT":           "asphalt",
-    "PAVER-BRICK":       "paving_stones",
-    "PAVERS":            "paving_stones",
-    "BRICK":             "paving_stones",
+    "COLORED":           "concrete",      # colored concrete
+    "STAMPED":           "concrete",      # stamped concrete
+    "ASPHALT":           "asphalt",       # 1.0
+    "PAVER-BRICK":       "paving_stones", # 0.7
+    "PAVER-CONCRETE":    "paving_stones",
+    "PAVER-GRANITE":     "paving_stones",
+    "PAVER-SANDSTONE":   "paving_stones",
+    "CRUSHED_STONE":     "compacted",     # 0.55 — compacted granular, better than loose gravel
+    # EXPERIMENTAL / PLASTIC_PANEL / RUBBERIZED intentionally unmapped → None.
 }
 
 
@@ -132,13 +157,17 @@ _AUSTIN_MATERIAL_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class CityInventoryProfile:
-    """Everything municipality-specific about one sidewalk inventory.
+class CityProfile:
+    """Everything municipality-specific about one city's walkability build.
 
-    ``build.py`` reads these fields instead of hard-coding Boston's schema.
+    ``build.py`` / ``environment.py`` / the download scripts read these fields
+    instead of hard-coding Boston's schema, extent, paths, and CRS.
     """
 
     name: str
+
+    # --- OSM extent ---
+    places: list[str]      # osmnx graph_from_place / features_from_place query
 
     # --- I/O ---
     graph_path:     Path   # OSM walk graph (osmnx download)
@@ -187,13 +216,24 @@ class CityInventoryProfile:
                 return SURFACE_SCORES[key]
         return None
 
+    def env_layer_path(self, layer: str) -> Path:
+        """Path to one cached environment-feature GeoPackage for this city.
+
+        ``layer`` is one of arterials/buildings/pois/openspace/landuse/roads.
+        Both ``download_environment.py`` (writer) and ``environment.py`` (reader)
+        resolve layer files through here, so a city's env layers live under
+        ``data/osm/<name>_<layer>.gpkg`` (e.g. boston_arterials.gpkg).
+        """
+        return OSM_DIR / f"{self.name}_{layer}.gpkg"
+
 
 # ---------------------------------------------------------------------------
 # The reference city — MUST stay behaviourally identical to the pre-refactor code
 # ---------------------------------------------------------------------------
 
-BOSTON_PROFILE = CityInventoryProfile(
+BOSTON_PROFILE = CityProfile(
     name="boston",
+    places=PLACES,  # config.PLACES — Boston + Brookline + the metro-hull towns
     graph_path=OSM_DIR / "boston_walk.graphml",
     enriched_path=OSM_DIR / "boston_walk_enriched.graphml",
     inventory_path=DATA_DIR / "boston" / "sidewalk_inventory" / "Sidewalk_Inventory.shp",
@@ -219,39 +259,43 @@ BOSTON_PROFILE = CityInventoryProfile(
 # Chapter D target — scaffold; TODO markers resolve once the data is downloaded
 # ---------------------------------------------------------------------------
 
-AUSTIN_PROFILE = CityInventoryProfile(
+AUSTIN_PROFILE = CityProfile(
     name="austin",
+    places=["Austin, Texas, USA"],  # city proper — matches the city-only inventory extent
     graph_path=OSM_DIR / "austin_walk.graphml",
     enriched_path=OSM_DIR / "austin_walk_enriched.graphml",
-    # TODO(austin-verify): confirm the downloaded filename/format (Socrata export
-    # of dataset vchz-d9ng; GeoJSON or shapefile).
-    inventory_path=DATA_DIR / "austin" / "sidewalk_inventory" / "sidewalks.geojson",
+    # Downloaded via paginated SODA export of dataset vchz-d9ng → GeoPackage
+    # (the single-shot .geojson stream truncates on this 352k-feature layer).
+    inventory_path=DATA_DIR / "austin" / "sidewalk_inventory" / "sidewalks.gpkg",
     metric_crs="EPSG:32614",  # UTM 14N — Austin
     # rating_no_veg = pure concrete/engineering condition (vegetation ignored) —
-    # the clean structural analog of Boston's SCI. We deliberately do NOT use
+    # the clean structural analog of Boston's SCI (coverage 265,657 rows, ~75%,
+    # confirmed via the live vchz-d9ng API). We deliberately do NOT use
     # rating_overall (which demotes structurally-fine sidewalks for hedge/tree
-    # overgrowth of the 80" clearance corridor): folding vegetation into
-    # surface_score would inject a spurious cross-city comfort gradient vs Boston,
-    # which has no equivalent signal. rating_overall's vegetation/clearance signal
-    # is a candidate NEW factor (obstruction/passability), not part of comfort.
-    # TODO(austin-verify): confirm rating_no_veg exists + its coverage; the portal
-    # metadata also lists rating_final/rating_overall — pick the pure-structural one.
+    # overgrowth of the 80" clearance corridor — it differs from rating_no_veg on
+    # 23,667 rows / ~9% of assessed): folding vegetation into surface_score would
+    # inject a spurious cross-city comfort gradient vs Boston, which has no
+    # equivalent signal. That rating_overall − rating_no_veg gap is instead a
+    # candidate NEW factor (obstruction/passability), not part of comfort.
     condition_field="rating_no_veg",
     surface_field="sidewalk_surface",
-    width_field="width_sidewalk",
+    width_field="width_sidewalk",   # feet (confirmed); a sparser numeric `width` also exists
     date_field="assessment_date",
     area_field=None,   # multiline segments — weight by geometry length, not polygon area
-    side_field=None,   # TODO(austin-verify): check for a side attribute; else top-2 by length
+    side_field=None,   # no side attribute in this inventory (confirmed) → top-2 by length
     condition_to_score=_austin_condition_to_score,   # INVERTED scale (1 best … 5 worst)
     aggregate_condition=lambda mean01: round(5.0 - mean01 * 4.0, 2),  # [0,1] → 1–5 (inverse)
     material_map=_AUSTIN_MATERIAL_MAP,
     is_phantom=_austin_is_phantom,
     divergence_threshold=0.15,  # keep the same normalised sensitivity as Boston
-    required_fields=("rating_no_veg", "functional_condition"),
+    required_fields=("rating_no_veg", "functional_condition", "pedestrian_facility_type"),
 )
 
 
-CITY_PROFILES: dict[str, CityInventoryProfile] = {
+CITY_PROFILES: dict[str, CityProfile] = {
     BOSTON_PROFILE.name: BOSTON_PROFILE,
     AUSTIN_PROFILE.name: AUSTIN_PROFILE,
 }
+
+# Backward-compatible alias (the profile grew from inventory-only to full city).
+CityInventoryProfile = CityProfile

@@ -65,7 +65,7 @@ from walkability.graph.environment import build_environment_index
 from walkability.graph.inventory import (
     BOSTON_PROFILE,
     CITY_PROFILES,
-    CityInventoryProfile,
+    CityProfile,
 )
 from walkability.osm.fallback import get_fallback
 from walkability.osm.tag_resolver import resolve_edge_tags
@@ -81,7 +81,7 @@ from walkability.scoring.weights import (
 
 # The default city. Every municipality-specific detail (inventory schema,
 # condition scale, material vocabulary, metric CRS, I/O paths) lives in a
-# CityInventoryProfile — see walkability/graph/inventory.py. Adding a city is
+# CityProfile — see walkability/graph/inventory.py. Adding a city is
 # adding a profile there; the pipeline below reads from the profile it is given.
 DEFAULT_PROFILE = BOSTON_PROFILE
 
@@ -162,7 +162,7 @@ def inspect_inventory_fields(path: Path = INVENTORY_PATH) -> None:
 def diagnose_spatial_join(
     graph_path:     Path | None = None,
     inventory_path: Path | None = None,
-    profile:        CityInventoryProfile = DEFAULT_PROFILE,
+    profile:        CityProfile = DEFAULT_PROFILE,
 ) -> None:
     """Diagnose why the spatial join may be returning 0 matches.
 
@@ -360,7 +360,7 @@ def load_graph(path: Path = GRAPH_PATH) -> nx.MultiDiGraph:
 
 def load_sidewalk_inventory(
     path:    Path | None = None,
-    profile: CityInventoryProfile = DEFAULT_PROFILE,
+    profile: CityProfile = DEFAULT_PROFILE,
 ) -> gpd.GeoDataFrame:
     """Load and lightly validate a city's sidewalk inventory."""
     path = path if path is not None else profile.inventory_path
@@ -382,7 +382,7 @@ def load_sidewalk_inventory(
 # City data helpers
 # ---------------------------------------------------------------------------
 # The condition→score and material→score adapters are per-city and live on the
-# CityInventoryProfile (profile.condition_to_score / profile.surface_score); the
+# CityProfile (profile.condition_to_score / profile.surface_score); the
 # helpers below are city-agnostic.
 
 def _width_to_score(width_ft: float | None) -> float | None:
@@ -453,7 +453,7 @@ def _city_surface_confidence(
 
 def _aggregate_city_candidates(
     rows:    gpd.GeoDataFrame,
-    profile: CityInventoryProfile,
+    profile: CityProfile,
 ) -> dict | None:
     """Aggregate every sidewalk-inventory feature matched to one OSM edge.
 
@@ -608,7 +608,7 @@ def _aggregate_city_candidates(
 def _build_spatial_index(
     G: nx.MultiDiGraph,
     sidewalks: gpd.GeoDataFrame,
-    profile: CityInventoryProfile = DEFAULT_PROFILE,
+    profile: CityProfile = DEFAULT_PROFILE,
 ) -> dict[tuple, dict]:
     """Bulk spatial join: map each OSM edge to an aggregate of its matched sidewalks.
 
@@ -696,7 +696,7 @@ def _build_canonical_schema(
     fallback:   Any,           # FallbackResult
     city_row:   dict | None,   # aggregated record from _aggregate_city_candidates
     env:        dict | None = None,
-    profile:    CityInventoryProfile = DEFAULT_PROFILE,
+    profile:    CityProfile = DEFAULT_PROFILE,
 ) -> dict:
     """Produce the canonical attribute dict for one edge.
 
@@ -831,14 +831,14 @@ def _build_canonical_schema(
 def build_edge_schema(
     G:        nx.MultiDiGraph,
     sidewalks: gpd.GeoDataFrame,
-    profile:  CityInventoryProfile = DEFAULT_PROFILE,
+    profile:  CityProfile = DEFAULT_PROFILE,
 ) -> nx.MultiDiGraph:
     """Enrich every edge in G with the canonical walkability schema.
 
     Modifies G in-place and returns it.
     """
     city_matches = _build_spatial_index(G, sidewalks, profile)
-    env_matches  = build_environment_index(G)
+    env_matches  = build_environment_index(G, profile)
 
     print("Enriching edges ...")
     n_edges   = G.number_of_edges()
@@ -899,7 +899,7 @@ def build(
     inventory_path: Path | None = None,
     output_path:    Path | None = None,
     force:          bool = False,
-    profile:        CityInventoryProfile = DEFAULT_PROFILE,
+    profile:        CityProfile = DEFAULT_PROFILE,
 ) -> nx.MultiDiGraph:
     """Full pipeline: load → enrich → save → return enriched graph.
 
@@ -981,7 +981,7 @@ def build_dev_subset(
     radius_m:       float | None = None,
     inventory_path: Path | None = None,
     force:          bool  = False,
-    profile:        CityInventoryProfile = DEFAULT_PROFILE,
+    profile:        CityProfile = DEFAULT_PROFILE,
 ) -> nx.MultiDiGraph:
     """Build and enrich the edges within a radius of a named region's centre.
 

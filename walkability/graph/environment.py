@@ -44,7 +44,7 @@ import networkx as nx
 import osmnx as ox
 import pandas as pd
 
-from walkability.config import OSM_DIR
+from walkability.graph.inventory import BOSTON_PROFILE, CityProfile
 from walkability.scoring.weights import (
     ARTERIAL_REACH_M,
     CAR_SAFETY_CEIL,
@@ -69,18 +69,10 @@ from walkability.scoring.weights import (
 # ---------------------------------------------------------------------------
 # Paths and constants
 # ---------------------------------------------------------------------------
-# Cached OSM feature inputs produced by graph/download_environment.py.
-ARTERIALS_PATH = OSM_DIR / "boston_arterials.gpkg"
-BUILDINGS_PATH = OSM_DIR / "boston_buildings.gpkg"
-POIS_PATH      = OSM_DIR / "boston_pois.gpkg"
-OPENSPACE_PATH = OSM_DIR / "boston_openspace.gpkg"
-LANDUSE_PATH   = OSM_DIR / "boston_landuse.gpkg"   # industrial polygons (A); optional
-ROADS_PATH     = OSM_DIR / "boston_roads.gpkg"     # all roads, for separation (B); optional
-
-# Metric CRS for distance/buffer maths — UTM Zone 19N covers Boston. Matches
-# graph/build.py::METRIC_CRS (duplicated here to avoid a circular import; build
-# imports this module).
-METRIC_CRS = "EPSG:32619"
+# The cached OSM feature inputs (produced by graph/download_environment.py) and
+# the metric CRS are per-city: they come from the CityProfile passed to
+# build_environment_index (default BOSTON_PROFILE), via profile.env_layer_path()
+# and profile.metric_crs. Adding a city needs no change here.
 
 # When enriching a dev SUBSET, features just outside the clip still influence its
 # boundary edges (an arterial 50 m past the edge of Beacon Hill is still real).
@@ -97,10 +89,10 @@ _DEFAULT_REACH_M: float = min(ARTERIAL_REACH_M.values())
 # Loaders
 # ---------------------------------------------------------------------------
 
-def _missing_inputs() -> list[Path]:
-    """Return the cached feature files that don't yet exist."""
-    return [p for p in (ARTERIALS_PATH, BUILDINGS_PATH, POIS_PATH, OPENSPACE_PATH)
-            if not p.exists()]
+def _missing_inputs(profile: CityProfile) -> list[Path]:
+    """Return the cached feature files that don't yet exist (required inputs)."""
+    return [profile.env_layer_path(n) for n in ("arterials", "buildings", "pois", "openspace")
+            if not profile.env_layer_path(n).exists()]
 
 
 def _drop_underground(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -123,28 +115,29 @@ def _drop_underground(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return gdf[keep].copy()
 
 
-def load_arterials() -> gpd.GeoDataFrame:
-    """Cached arterial road geometry (incl. motorway/trunk), in METRIC_CRS,
-    with underground (tunnel / layer<0) segments dropped."""
-    gdf = gpd.read_file(ARTERIALS_PATH).to_crs(METRIC_CRS)
+def load_arterials(profile: CityProfile) -> gpd.GeoDataFrame:
+    """Cached arterial road geometry (incl. motorway/trunk), in the city's metric
+    CRS, with underground (tunnel / layer<0) segments dropped."""
+    gdf = gpd.read_file(profile.env_layer_path("arterials")).to_crs(profile.metric_crs)
     # Keep only line geometry — distance-to-road is meaningless for stray points.
     gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
     return _drop_underground(gdf)
 
 
-def load_buildings() -> gpd.GeoDataFrame:
-    """Cached building footprints, in METRIC_CRS."""
-    return gpd.read_file(BUILDINGS_PATH).to_crs(METRIC_CRS)
+def load_buildings(profile: CityProfile) -> gpd.GeoDataFrame:
+    """Cached building footprints, in the city's metric CRS."""
+    return gpd.read_file(profile.env_layer_path("buildings")).to_crs(profile.metric_crs)
 
 
-def load_pois() -> gpd.GeoDataFrame:
-    """Cached shop/amenity POIs in METRIC_CRS, with a foot-traffic ``weight`` column.
+def load_pois(profile: CityProfile) -> gpd.GeoDataFrame:
+    """Cached shop/amenity POIs in the city's metric CRS, with a foot-traffic
+    ``weight`` column.
 
     Street furniture / parking (POI_NOISE_AMENITIES) weigh 0; every shop and any
     other amenity weighs 1 (active frontage). Older caches without the type
     columns fall back to weight 1 for all.
     """
-    gdf = gpd.read_file(POIS_PATH).to_crs(METRIC_CRS)
+    gdf = gpd.read_file(profile.env_layer_path("pois")).to_crs(profile.metric_crs)
     amenity = gdf["amenity"] if "amenity" in gdf.columns else None
     shop    = gdf["shop"]    if "shop"    in gdf.columns else None
 
@@ -161,38 +154,39 @@ def load_pois() -> gpd.GeoDataFrame:
     return gdf
 
 
-def load_openspace() -> gpd.GeoDataFrame:
+def load_openspace(profile: CityProfile) -> gpd.GeoDataFrame:
     """Cached large open-space polygons (parks + water + cemeteries ≥
-    OPENSPACE_MIN_AREA_M2), in METRIC_CRS. Small pocket parks/playgrounds are
-    dropped — only meaningful open space gives the openness/sightlines that read
-    as safe. The ``kind`` column (water/park/cemetery) lets ``_openness_scores``
-    discount cemeteries (see CEMETERY_OPENNESS_FACTOR)."""
-    gdf = gpd.read_file(OPENSPACE_PATH).to_crs(METRIC_CRS)
+    OPENSPACE_MIN_AREA_M2), in the city's metric CRS. Small pocket
+    parks/playgrounds are dropped — only meaningful open space gives the
+    openness/sightlines that read as safe. The ``kind`` column
+    (water/park/cemetery) lets ``_openness_scores`` discount cemeteries (see
+    CEMETERY_OPENNESS_FACTOR)."""
+    gdf = gpd.read_file(profile.env_layer_path("openspace")).to_crs(profile.metric_crs)
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     gdf = gdf[gdf.geometry.area >= OPENSPACE_MIN_AREA_M2]
     return gdf
 
 
-def load_landuse() -> gpd.GeoDataFrame:
-    """Cached industrial landuse polygons (A), in METRIC_CRS. Optional input —
-    callers must handle its absence (industrial_exposure then defaults to 0)."""
-    gdf = gpd.read_file(LANDUSE_PATH).to_crs(METRIC_CRS)
+def load_landuse(profile: CityProfile) -> gpd.GeoDataFrame:
+    """Cached industrial landuse polygons (A), in the city's metric CRS. Optional
+    input — callers must handle its absence (industrial_exposure then → 0)."""
+    gdf = gpd.read_file(profile.env_layer_path("landuse")).to_crs(profile.metric_crs)
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     return gdf
 
 
-def load_roads() -> gpd.GeoDataFrame:
-    """Cached all-roads geometry (B), in METRIC_CRS. Optional input — callers must
-    handle its absence (road_separation then defaults to 0, today's flat ceiling)."""
-    gdf = gpd.read_file(ROADS_PATH).to_crs(METRIC_CRS)
+def load_roads(profile: CityProfile) -> gpd.GeoDataFrame:
+    """Cached all-roads geometry (B), in the city's metric CRS. Optional input —
+    callers must handle its absence (road_separation then defaults to 0)."""
+    gdf = gpd.read_file(profile.env_layer_path("roads")).to_crs(profile.metric_crs)
     gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
     return _drop_underground(gdf)
 
 
-def _empty_gdf() -> gpd.GeoDataFrame:
-    """An empty GeoDataFrame in METRIC_CRS — the no-op stand-in for an optional
-    (landuse / roads) layer that hasn't been downloaded yet."""
-    return gpd.GeoDataFrame(geometry=[], crs=METRIC_CRS)
+def _empty_gdf(profile: CityProfile) -> gpd.GeoDataFrame:
+    """An empty GeoDataFrame in the city's metric CRS — the no-op stand-in for an
+    optional (landuse / roads) layer that hasn't been downloaded yet."""
+    return gpd.GeoDataFrame(geometry=[], crs=profile.metric_crs)
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +322,10 @@ def _enclosure_blind(highway, service) -> bool:
 # Bulk per-edge index (mirrors build.py::_build_spatial_index)
 # ---------------------------------------------------------------------------
 
-def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
+def build_environment_index(
+    G: nx.MultiDiGraph,
+    profile: CityProfile = BOSTON_PROFILE,
+) -> dict[tuple, dict]:
     """Map every edge (u, v, key) → its environment sub-scores.
 
     Returns a dict keyed by (u, v, key) with ``{maxspeed_safety_score,
@@ -336,9 +333,10 @@ def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     environment_confidence}``. If the cached feature inputs are missing, returns
     an empty dict (a warning is printed) so the rest of the build still runs —
     edges simply get no environment_score and the factor drops out of the
-    weighted mean (consistent with the pipeline's None≠0 philosophy).
+    weighted mean (consistent with the pipeline's None≠0 philosophy). Feature
+    layers + metric CRS come from ``profile`` (default Boston).
     """
-    missing = _missing_inputs()
+    missing = _missing_inputs(profile)
     if missing:
         warnings.warn(
             "Environment feature inputs missing: "
@@ -358,20 +356,22 @@ def build_environment_index(G: nx.MultiDiGraph) -> dict[tuple, dict]:
     for opt in ("service", "maxspeed"):
         if opt in edges_gdf.columns:
             keep.append(opt)
-    edges_metric = edges_gdf[keep].to_crs(METRIC_CRS)
+    edges_metric = edges_gdf[keep].to_crs(profile.metric_crs)
 
     # Load features once, clipped to the edge bbox + margin (matters for subsets).
     minx, miny, maxx, maxy = edges_metric.total_bounds
     minx, miny = minx - AREA_MARGIN_M, miny - AREA_MARGIN_M
     maxx, maxy = maxx + AREA_MARGIN_M, maxy + AREA_MARGIN_M
-    arterials = load_arterials().cx[minx:maxx, miny:maxy]
-    buildings = load_buildings().cx[minx:maxx, miny:maxy]
-    pois      = load_pois().cx[minx:maxx, miny:maxy]
-    openspace = load_openspace().cx[minx:maxx, miny:maxy]
+    arterials = load_arterials(profile).cx[minx:maxx, miny:maxy]
+    buildings = load_buildings(profile).cx[minx:maxx, miny:maxy]
+    pois      = load_pois(profile).cx[minx:maxx, miny:maxy]
+    openspace = load_openspace(profile).cx[minx:maxx, miny:maxy]
     # Optional layers (A: industrial down-weight, B: road separation). Absent file
     # ⇒ empty ⇒ the signal defaults off (exposure 0 / separation 0 = today's model).
-    landuse = load_landuse().cx[minx:maxx, miny:maxy] if LANDUSE_PATH.exists() else _empty_gdf()
-    roads   = load_roads().cx[minx:maxx, miny:maxy]   if ROADS_PATH.exists()   else _empty_gdf()
+    landuse = (load_landuse(profile).cx[minx:maxx, miny:maxy]
+               if profile.env_layer_path("landuse").exists() else _empty_gdf(profile))
+    roads   = (load_roads(profile).cx[minx:maxx, miny:maxy]
+               if profile.env_layer_path("roads").exists() else _empty_gdf(profile))
     print(f"  Features in area: {len(arterials)} arterials, {len(buildings)} buildings, "
           f"{len(pois)} POIs, {len(openspace)} open spaces, {len(landuse)} industrial, "
           f"{len(roads)} roads")
