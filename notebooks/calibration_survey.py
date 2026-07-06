@@ -243,6 +243,131 @@ SURVEY_ROUTES: list[dict] = [
 
 
 # ---------------------------------------------------------------------------
+# Representative AUSTIN routes — spanning the spectrum from the walkable core +
+# car-free trails (top) through residential neighbourhoods (mid) to the
+# car-dependent stroads/arterials Austin is built around (bottom). Coordinates
+# are approximate; find_routes snaps to the nearest routable node. Austin is the
+# less-walkable / real-condition-data calibration city — the KEY questions are at
+# the LOW end (do the stroads score low enough?) and around the honest 1–5
+# surface ratings (does genuinely-marginal condition read right?).
+# ---------------------------------------------------------------------------
+AUSTIN_ROUTES: list[dict] = [
+    # ---- top end: walkable core + car-free trails ----
+    {
+        "name": "downtown_congress_2nd_to_6th",
+        "area": "Downtown (Congress Ave, 2nd → 6th)",
+        "origin": (30.2649, -97.7431), "dest": (30.2685, -97.7428),
+        "look_for": "Austin's most walkable spine: wide sidewalks, shops, foot traffic. Should be near the top of Austin's range. Does it read as clearly better than the stroads?",
+    },
+    {
+        "name": "rainey_street_district",
+        "area": "Rainey Street (bar district)",
+        "origin": (30.2585, -97.7395), "dest": (30.2602, -97.7386),
+        "look_for": "Dense, lively converted-bungalow bar strip, narrow, high foot traffic. Eyes-on-street should be high. Does high activity score correctly?",
+    },
+    {
+        "name": "south_congress_soco",
+        "area": "South Congress (SoCo shops)",
+        "origin": (30.2490, -97.7505), "dest": (30.2516, -97.7500),
+        "look_for": "Iconic Austin shopping/dining strip — walkable but beside a moderately busy road. Does the retail liveliness vs the traffic balance out right?",
+    },
+    {
+        "name": "ut_drag_guadalupe",
+        "area": "UT / The Drag (Guadalupe St)",
+        "origin": (30.2865, -97.7415), "dest": (30.2902, -97.7412),
+        "look_for": "Campus commercial edge: constant students, transit, shops, but a busy arterial. High eyes + busy road — does the safety penalty land right?",
+    },
+    {
+        "name": "hyde_park_residential",
+        "area": "Hyde Park (Avenue B, residential)",
+        "origin": (30.3020, -97.7285), "dest": (30.3048, -97.7283),
+        "look_for": "Classic walkable historic neighbourhood: calm, tree-lined, gridded. A high-end residential anchor — should score well on safety+path.",
+    },
+    {
+        "name": "clarksville_west_lynn",
+        "area": "Clarksville (West Lynn St)",
+        "origin": (30.2775, -97.7595), "dest": (30.2797, -97.7590),
+        "look_for": "Small walkable historic pocket near downtown. Narrow, calm, some shops. Outer-core walkable anchor.",
+    },
+    {
+        "name": "shoal_creek_trail",
+        "area": "Shoal Creek Trail (greenway)",
+        "origin": (30.2760, -97.7490), "dest": (30.2800, -97.7480),
+        "look_for": "TOP-END: car-free creekside separated path — the greenway acid test. Where should a genuine road-separated trail land vs an ordinary sidewalk? Does openness/separation push it above street routes?",
+    },
+    {
+        "name": "mueller_aldrich",
+        "area": "Mueller (Aldrich St, new-urbanist)",
+        "origin": (30.2985, -97.7062), "dest": (30.3000, -97.7042),
+        "look_for": "Purpose-built walkable redevelopment: wide sidewalks, retail, calm streets by design. Should score high — a modern 'done right' anchor.",
+    },
+    # ---- middle: neighbourhood main streets / mixed ----
+    {
+        "name": "east_austin_e6th",
+        "area": "East Austin (E 6th St)",
+        "origin": (30.2595, -97.7220), "dest": (30.2599, -97.7172),
+        "look_for": "Gentrifying nightlife/retail strip, mixed condition sidewalks, moderate traffic. A lively-but-gritty mid anchor — does eyes-on-street over-inflate it?",
+    },
+    {
+        "name": "north_loop",
+        "area": "North Loop Blvd (quirky strip)",
+        "origin": (30.3175, -97.7225), "dest": (30.3196, -97.7212),
+        "look_for": "Small walkable indie commercial strip in a residential sea. Calm, low-rise. A 'good but modest' mid anchor.",
+    },
+    {
+        "name": "travis_heights_residential",
+        "area": "Travis Heights (residential)",
+        "origin": (30.2470, -97.7440), "dest": (30.2492, -97.7420),
+        "look_for": "Leafy residential south of the river, some sidewalk gaps, calm streets. Tests the low-traffic residential middle where sidewalks are patchy.",
+    },
+    # ---- bottom end: stroads / car-dependent arterials (the calibration payload) ----
+    {
+        "name": "north_lamar_rundberg",
+        "area": "North Lamar Blvd (@ Rundberg)",
+        "origin": (30.3560, -97.7085), "dest": (30.3586, -97.7080), "alpha": 0.0,
+        "look_for": "BOTTOM-END: classic Austin stroad — wide fast arterial, strip malls, hostile crossings, but a sidewalk exists. Should score LOW (safety floors it). Is it low enough?",
+    },
+    {
+        "name": "ben_white_s1st",
+        "area": "Ben White Blvd (@ S 1st)",
+        "origin": (30.2280, -97.7690), "dest": (30.2286, -97.7650), "alpha": 0.0,
+        "look_for": "BOTTOM-END: highway-grade multi-lane arterial with frontage. Genuinely hostile to walk. Should be near the floor.",
+    },
+    {
+        "name": "airport_blvd",
+        "area": "Airport Blvd (@ 45th)",
+        "origin": (30.3020, -97.7132), "dest": (30.3052, -97.7122), "alpha": 0.0,
+        "look_for": "BOTTOM-END: wide car-oriented arterial, auto shops, sparse frontage. Low eyes + fast traffic — check the safety penalty.",
+    },
+    {
+        "name": "east_riverside_arterial",
+        "area": "East Riverside Dr (arterial)",
+        "origin": (30.2345, -97.7230), "dest": (30.2360, -97.7198), "alpha": 0.0,
+        "look_for": "BOTTOM-END: apartment-district arterial, wide and busy but heavily walked by students/transit riders. Tension: real foot traffic on a hostile road — where should it land?",
+    },
+    {
+        "name": "burnet_rd_anderson",
+        "area": "Burnet Rd (@ Anderson Ln)",
+        "origin": (30.3625, -97.7392), "dest": (30.3652, -97.7386), "alpha": 0.0,
+        "look_for": "BOTTOM/MID: commercial stroad, strip retail, moderate-to-fast traffic, patchy sidewalks. A car-dependent commercial anchor — is it distinguished from the true walkable strips?",
+    },
+    {
+        "name": "research_183_frontage",
+        "area": "Research Blvd / US-183 (frontage)",
+        "origin": (30.3928, -97.7250), "dest": (30.3950, -97.7228), "alpha": 0.0,
+        "look_for": "BOTTOM-END: highway frontage road — the most car-dependent case. Should be at or near the absolute floor of Austin's range.",
+    },
+]
+
+
+# City → its curated route set. Add a city here when it gets a survey.
+CITY_ROUTES: dict[str, list[dict]] = {
+    "boston": SURVEY_ROUTES,
+    "austin": AUSTIN_ROUTES,
+}
+
+
+# ---------------------------------------------------------------------------
 # Geometry / formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -355,7 +480,11 @@ def _alpha_moves(G, origin, dest) -> bool:
 
 
 def _survey(G, case: dict) -> dict:
-    routes = find_routes(G, tuple(case["origin"]), tuple(case["dest"]), alpha=ALPHA_DEFAULT)
+    # A route may pin its own alpha — e.g. a stroad calibration case uses alpha=0
+    # (shortest path) so it stays ON the hostile arterial instead of the router
+    # detouring onto a parallel calm street (which defeats low-end calibration).
+    alpha = case.get("alpha", ALPHA_DEFAULT)
+    routes = find_routes(G, tuple(case["origin"]), tuple(case["dest"]), alpha=alpha)
     if not routes:
         return {**case, "found": False}
     best = routes[0]
@@ -545,12 +674,12 @@ def _card(i: int, r: dict) -> str:
 </div>"""
 
 
-def build_html(results: list[dict]) -> str:
+def build_html(results: list[dict], city: str = "Boston") -> str:
     cards = "\n".join(_card(i, r) for i, r in enumerate(results, start=1))
     return f"""<!doctype html><html><head><meta charset="utf-8">
-<title>Walkability calibration survey</title><style>{CSS}</style></head><body>
-<h1>Walkability calibration survey</h1>
-<p class="sub">{len(results)} routes across Boston · model = the new HDI-style two-level score.
+<title>Walkability calibration survey — {html.escape(city)}</title><style>{CSS}</style></head><body>
+<h1>Walkability calibration survey — {html.escape(city)}</h1>
+<p class="sub">{len(results)} routes across {html.escape(city)} · model = the new HDI-style two-level score.
 Answer per route; replies tune CATEGORY_WEIGHTS / CATEGORY_FLOOR and surface data problems.</p>
 <div class="intro"><b>How to read each card</b>
 <ol>
@@ -568,15 +697,30 @@ Answer per route; replies tune CATEGORY_WEIGHTS / CATEGORY_FLOOR and surface dat
 
 
 def main():
+    from walkability.graph.inventory import CITY_PROFILES
+
     ap = argparse.ArgumentParser(description="Generate the calibration survey HTML.")
-    ap.add_argument("--graph", default=str(ENRICHED_PATH))
-    ap.add_argument("--out", default=str(Path(__file__).with_name("calibration_survey.html")))
+    ap.add_argument("--city", default="boston", choices=sorted(CITY_ROUTES),
+                    help="City survey to generate (default: boston).")
+    ap.add_argument("--graph", default=None,
+                    help="Enriched graph path (default: the city's profile enriched_path).")
+    ap.add_argument("--out", default=None,
+                    help="Output HTML (default: <city>_calibration_survey.html for non-Boston).")
     args = ap.parse_args()
 
-    print(f"Loading {args.graph} ...")
-    G = load_graph(Path(args.graph))
+    routes = CITY_ROUTES[args.city]
+    graph_path = args.graph or str(CITY_PROFILES[args.city].enriched_path)
+    if args.out:
+        out = Path(args.out)
+    elif args.city == "boston":
+        out = Path(__file__).with_name("calibration_survey.html")
+    else:
+        out = Path(__file__).with_name(f"{args.city}_calibration_survey.html")
+
+    print(f"Loading {graph_path} ...")
+    G = load_graph(Path(graph_path))
     results = []
-    for case in SURVEY_ROUTES:
+    for case in routes:
         try:
             r = _survey(G, case)
         except Exception as exc:
@@ -588,8 +732,7 @@ def main():
         print(f"  {case['name']:<36} {tag}")
         results.append(r)
 
-    out = Path(args.out)
-    out.write_text(build_html(results))
+    out.write_text(build_html(results, city=args.city.capitalize()))
     print(f"\nWrote {sum(1 for r in results if r.get('found'))}/{len(results)} routes → {out}")
 
 
