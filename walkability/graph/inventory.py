@@ -54,16 +54,41 @@ def _boston_condition_to_score(raw: Any) -> float | None:
     return round(sci / 100.0, 4)
 
 
+def _piecewise(x: float, knots: tuple[tuple[float, float], ...]) -> float:
+    """Piecewise-linear interpolation of ``x`` through ``knots`` (ascending x),
+    clamped to the endpoints outside the range."""
+    if x <= knots[0][0]:
+        return knots[0][1]
+    if x >= knots[-1][0]:
+        return knots[-1][1]
+    for (x0, y0), (x1, y1) in zip(knots, knots[1:]):
+        if x <= x1:
+            return y0 + (x - x0) / (x1 - x0) * (y1 - y0)
+    return knots[-1][1]
+
+
+# Candidate-A condition curve (calibrated 2026-07-06). Direction is INVERTED from
+# Boston's SCI (Austin 1 = Excellent … 5 = Failed/impassable, per the Sidewalk
+# Master Plan matrix). The earlier LINEAR (5-rating)/4 map over-penalized Austin's
+# stricter ADA-based scale vs Boston's lenient SCI — a "fully walkable" rating-2
+# became 0.75 and a "marginal but walkable" rating-3 became 0.50, biasing comfort
+# pessimistically (Austin surface mean 0.65 vs Boston 0.87; the ground-truth
+# survey confirmed 2s/3s over-penalized). This curve SOFTENS 2s and 3s (they are
+# walkable) while keeping the genuinely-bad 4/5 low (real trip hazards / impassable).
+# ``_austin_aggregate_condition`` below is its EXACT inverse (swapped knots), so
+# the both-sides aggregation round-trip (mean surface_score → rating → re-map)
+# preserves the aggregated value even though the curve is non-linear.
+_AUSTIN_RATING_KNOTS = ((1.0, 1.0), (2.0, 0.85), (3.0, 0.65), (4.0, 0.35), (5.0, 0.0))
+_AUSTIN_SCORE_KNOTS  = ((0.0, 5.0), (0.35, 4.0), (0.65, 3.0), (0.85, 2.0), (1.0, 1.0))
+
+
 def _austin_condition_to_score(raw: Any) -> float | None:
     """Austin structural rating (1–5 ordinal) → [0, 1], or None when invalid.
 
-    Direction is **INVERTED from Boston's SCI**: Austin 1 = Excellent (best),
-    5 = Failed/impassable (worst), per the Sidewalk Master Plan engineering
-    matrix (1: ADA-compliant, <2% cross-slope, faults <0.25"; … 5: missing /
-    cross-slope >12% / faults >4"). So a good sidewalk is a *low* number →
-    ``(5 - rating) / 4`` maps 1→1.0, 3→0.5, 5→0.0. Non-numeric / out-of-range
-    (e.g. PENDING ASSESSMENT rows carrying null) return None so the edge falls
-    through to the OSM-tag tier.
+    Piecewise-linear through ``_AUSTIN_RATING_KNOTS`` (1→1.0, 2→0.85, 3→0.65,
+    4→0.35, 5→0.0). Also handles the fractional aggregated rating from the
+    both-sides mean. Non-numeric / out-of-range (e.g. PENDING ASSESSMENT rows
+    carrying null) return None so the edge falls through to the OSM-tag tier.
     """
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return None
@@ -73,7 +98,14 @@ def _austin_condition_to_score(raw: Any) -> float | None:
         return None
     if not (1.0 <= rating <= 5.0):
         return None
-    return round((5.0 - rating) / 4.0, 4)
+    return round(_piecewise(rating, _AUSTIN_RATING_KNOTS), 4)
+
+
+def _austin_aggregate_condition(mean01: float) -> float:
+    """Inverse of ``_austin_condition_to_score``: normalised mean surface_score
+    [0,1] → the equivalent 1–5 rating (audit value). Exact inverse of the curve
+    above, so the schema's re-map reproduces the aggregated surface_score."""
+    return round(_piecewise(max(0.0, min(1.0, mean01)), _AUSTIN_SCORE_KNOTS), 2)
 
 
 def _boston_is_phantom(row: Mapping[str, Any]) -> bool:
@@ -283,8 +315,8 @@ AUSTIN_PROFILE = CityProfile(
     date_field="assessment_date",
     area_field=None,   # multiline segments — weight by geometry length, not polygon area
     side_field=None,   # no side attribute in this inventory (confirmed) → top-2 by length
-    condition_to_score=_austin_condition_to_score,   # INVERTED scale (1 best … 5 worst)
-    aggregate_condition=lambda mean01: round(5.0 - mean01 * 4.0, 2),  # [0,1] → 1–5 (inverse)
+    condition_to_score=_austin_condition_to_score,   # non-linear, softened 2s/3s (candidate A)
+    aggregate_condition=_austin_aggregate_condition,  # exact inverse of the curve
     material_map=_AUSTIN_MATERIAL_MAP,
     is_phantom=_austin_is_phantom,
     divergence_threshold=0.15,  # keep the same normalised sensitivity as Boston
