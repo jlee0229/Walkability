@@ -311,7 +311,13 @@ AUSTIN_PROFILE = CityProfile(
     # candidate NEW factor (obstruction/passability), not part of comfort.
     condition_field="rating_no_veg",
     surface_field="sidewalk_surface",
-    width_field="width_sidewalk",   # feet (confirmed); a sparser numeric `width` also exists
+    # width DROPPED (2026-07-06): width_sidewalk is untrustworthy — 73% logged as a
+    # 3 ft default (→ width_score 0 on the ramp, mean 0.073, cratering comfort), and
+    # 26% of rating-1 sidewalks are logged 3 ft despite rating-1 requiring >4 ft. Per
+    # the codebase's "don't mis-score unreliable data" pattern (corrupt SCI→None), we
+    # don't use it: width_field=None drops the factor so Austin comfort = mean(condition,
+    # material). Boston keeps its width. Revisit if a future city has clean width data.
+    width_field=None,
     date_field="assessment_date",
     area_field=None,   # multiline segments — weight by geometry length, not polygon area
     side_field=None,   # no side attribute in this inventory (confirmed) → top-2 by length
