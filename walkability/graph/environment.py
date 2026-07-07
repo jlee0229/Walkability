@@ -237,14 +237,17 @@ def _is_arterial(highway) -> bool:
     return any(c in ARTERIAL_REACH_M for c in _base_classes(highway))
 
 
-def on_path_safety(highway, maxspeed) -> float:
-    """Car-safety of the road you walk ALONG: 1.0 on a protected path, else from speed."""
+def on_path_safety(highway, maxspeed, defaults: dict = DEFAULT_MAXSPEED_MPH) -> float:
+    """Car-safety of the road you walk ALONG: 1.0 on a protected path, else from speed.
+
+    ``defaults`` is the per-city fallback speed table (profile.maxspeed_defaults)
+    used when the road has no ``maxspeed`` tag."""
     if _is_pedestrian(highway):
         return 1.0
     speed = _parse_speed(maxspeed)
     if speed is None:
         classes = _base_classes(highway)
-        speeds = [DEFAULT_MAXSPEED_MPH[c] for c in classes if c in DEFAULT_MAXSPEED_MPH]
+        speeds = [defaults[c] for c in classes if c in defaults]
         speed = max(speeds) if speeds else 25.0    # unknown road ≈ residential
     return maxspeed_safety(speed)
 
@@ -377,7 +380,7 @@ def build_environment_index(
           f"{len(roads)} roads")
 
     n = len(edges_metric)
-    off_scores  = _arterial_scores(edges_metric, arterials)   # off-path safety per edge
+    off_scores  = _arterial_scores(edges_metric, arterials, profile.maxspeed_defaults)  # off-path
     poi_weight  = _buffer_sum(edges_metric, pois, EYES_BUFFER_M, weight_col="weight")
     bldg_counts = _buffer_sum(edges_metric, buildings, EYES_BUFFER_M)
     openness    = _openness_scores(edges_metric, openspace)
@@ -387,12 +390,13 @@ def build_environment_index(
     service_col  = (edges_metric["service"]  if "service"  in edges_metric.columns else [None] * n)
     maxspeed_col = (edges_metric["maxspeed"] if "maxspeed" in edges_metric.columns else [None] * n)
 
+    cap = profile.eyes_rescue_cap
     index: dict[tuple, dict] = {}
     for eid, hwy, svc, ms in zip(edges_metric["edge_id"], edges_metric["highway"],
                                  service_col, maxspeed_col):
         ind = industrial.get(eid, 0.0)
         sep = separation.get(eid, 0.0)
-        on  = on_path_safety(hwy, ms)                       # the road you walk along
+        on  = on_path_safety(hwy, ms, profile.maxspeed_defaults)  # the road you walk along
         off = 1.0 if _is_arterial(hwy) else off_scores.get(eid, 1.0)  # nearby arterials
         # B: GRADED ceiling. A road-adjacent path (sep 0) tops at CAR_SAFETY_CEIL;
         # a genuinely road-separated path (sep→1, a greenway / ped bridge) climbs
@@ -404,12 +408,15 @@ def build_environment_index(
         e, e_unc = perceived_safety(
             poi_weight.get(eid, 0.0), bldg_counts.get(eid, 0.0), openness.get(eid, 0.0),
             enclosure_blind=_enclosure_blind(hwy, svc), industrial=ind)
+        # Eyes can't rescue a low-car_safety road beyond a per-city cap: a
+        # strip-mall's foot traffic shouldn't make a 45 mph stroad read as safe.
+        e_eff = min(e, car + cap) if cap is not None else e
         index[eid] = {
             "maxspeed_safety_score":    round(on, 4),
             "arterial_proximity_score": round(off, 4),
             "car_safety_score":         round(car, 4),
             "eyes_score":               round(e, 4),
-            "environment_score":        round(math.sqrt(car * e), 4),
+            "environment_score":        round(math.sqrt(car * e_eff), 4),
             "environment_confidence":   ENV_CONFIDENCE,
             # Sub-signals exposed for diagnostics + offline lever isolation: recompute
             # car/env with INDUSTRIAL_CAR_PENALTY=0, sep→0, or a different EYES_CEIL
@@ -519,8 +526,11 @@ def _separation_scores(
 def _arterial_scores(
     edges_metric: gpd.GeoDataFrame,
     arterials:    gpd.GeoDataFrame,
+    defaults:     dict = DEFAULT_MAXSPEED_MPH,
 ) -> dict[tuple, float]:
-    """Per-edge OFF-PATH safety (1 − nearest-arterial hostility·falloff) via one join."""
+    """Per-edge OFF-PATH safety (1 − nearest-arterial hostility·falloff) via one join.
+
+    ``defaults`` is the per-city fallback speed table for untagged arterials."""
     if arterials.empty:
         return {}
 
@@ -531,7 +541,7 @@ def _arterial_scores(
     # DISTANCE) stays class-based — a big road's threat extends further regardless
     # of posted speed.
     ms_col = art["maxspeed"] if "maxspeed" in art.columns else [None] * len(art)
-    speeds = [(_parse_speed(m) or DEFAULT_MAXSPEED_MPH.get(b, 30.0))
+    speeds = [(_parse_speed(m) or defaults.get(b, 30.0))
               for b, m in zip(bases, ms_col)]
     art["reach"]     = [ARTERIAL_REACH_M.get(b, _DEFAULT_REACH_M) for b in bases]
     art["hostility"] = [_arterial_hostility(s) for s in speeds]

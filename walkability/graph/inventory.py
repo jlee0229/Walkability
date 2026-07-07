@@ -27,7 +27,18 @@ from typing import Any, Callable, Mapping
 import pandas as pd
 
 from walkability.config import DATA_DIR, OSM_DIR, PLACES
-from walkability.scoring.weights import SURFACE_SCORES
+from walkability.scoring.weights import DEFAULT_MAXSPEED_MPH, SURFACE_SCORES
+
+# Austin's arterials run far faster than Boston's (Sun Belt stroads). OSM tags
+# maxspeed on only ~42% of them, so the untagged majority falls to these class
+# defaults — the Boston-calibrated globals (secondary 30, primary 35) badly
+# under-penalize Austin, where tagged speeds show secondary/primary arterials at
+# 40–55 mph (the ground-truth survey flagged safety-too-high on every stroad).
+_AUSTIN_MAXSPEED_DEFAULTS: dict[str, float] = {
+    "living_street": 10.0, "service": 15.0, "residential": 25.0,
+    "unclassified": 30.0, "tertiary": 35.0, "secondary": 40.0,
+    "primary": 45.0, "trunk": 55.0, "motorway": 65.0,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +237,17 @@ class CityProfile:
     # --- divergence, in normalised [0, 1] condition units (not raw points) ---
     divergence_threshold: float
 
+    # --- environment: per-city fallback speeds for untagged roads (crash-risk
+    # curve). Defaults to the global (Boston-calibrated) DEFAULT_MAXSPEED_MPH. ---
+    maxspeed_defaults: dict[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_MAXSPEED_MPH))
+
+    # Cap on how much eyes-on-street can rescue a low-car_safety road:
+    # eyes_eff = min(eyes, car_safety + cap) before environment = sqrt(car·eyes).
+    # None = no cap (Boston, unchanged). A small cap stops a strip-mall's foot
+    # traffic from making a hostile fast arterial read as safe (Austin stroads).
+    eyes_rescue_cap: float | None = None
+
     # --- validation ---
     required_fields: tuple[str, ...] = field(default_factory=tuple)
 
@@ -326,6 +348,8 @@ AUSTIN_PROFILE = CityProfile(
     material_map=_AUSTIN_MATERIAL_MAP,
     is_phantom=_austin_is_phantom,
     divergence_threshold=0.15,  # keep the same normalised sensitivity as Boston
+    maxspeed_defaults=_AUSTIN_MAXSPEED_DEFAULTS,  # faster arterials than Boston
+    eyes_rescue_cap=0.15,  # strip-mall foot traffic can't make a stroad feel safe
     required_fields=("rating_no_veg", "functional_condition", "pedestrian_facility_type"),
 )
 
