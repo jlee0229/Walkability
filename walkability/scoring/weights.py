@@ -264,6 +264,19 @@ DEFAULT_MAXSPEED_MPH: dict[str, float] = {
     "primary": 35.0, "trunk": 45.0, "motorway": 60.0,
 }
 
+# Untagged-arterial speed IMPUTATION. A large share of arterials carry no
+# `maxspeed` tag (Austin: only ~30% of secondaries), and posted speed varies with
+# LOCATION as much as class — a downtown secondary runs ~30 mph, the same class in
+# the suburbs ~45 (verified on Austin's tagged arterials). A flat class default
+# therefore over-penalises the walkable core and under-penalises the fringe. So an
+# untagged arterial takes the MEDIAN posted speed of the nearest
+# ARTERIAL_IMPUTE_K tagged arterials of the SAME base class within
+# ARTERIAL_IMPUTE_MAX_M; only when none is that close does it fall back to the
+# class default above. Matching on class keeps a nearby motorway ramp from
+# inflating a calm secondary; the median makes it robust to a lone outlier.
+ARTERIAL_IMPUTE_K: int = 6
+ARTERIAL_IMPUTE_MAX_M: float = 3000.0
+
 # Pedestrian-dedicated ways carry no through traffic → on-path safety 1.0.
 PEDESTRIAN_HIGHWAYS: frozenset[str] = frozenset({
     "pedestrian", "footway", "path", "steps",
@@ -360,6 +373,68 @@ LANDUSE_TAGS: list[str]              = ["industrial"]   # widen after survey if 
 INDUSTRIAL_REACH_M: float           = 30.0
 INDUSTRIAL_CAR_PENALTY: float       = 0.35   # car *= (1 − p·exposure); 0.85 → ~0.55
 INDUSTRIAL_ENCLOSURE_DISCOUNT: float = 1.0   # enclosure *= (1 − d·exposure); 1.0 = full
+
+# --- Surface-parking down-weight: the strip-mall "false eyes" fix ---------------
+# A large surface parking lot between the sidewalk and the buildings is the
+# signature of a strip mall / commercial stroad. The shops and buildings ARE
+# present (so POI-`activity` and building-`enclosure` both fire), but they sit
+# behind a parking moat, oriented to cars — no street-level "eyes on the street".
+# Research (findingspress.org parking-lot audit: 23% vs ~50% walkability, dead
+# last on perceived safety AND attractiveness; Speck's "what could be more boring
+# than a parking lot") treats surface lots as an INDEPENDENT negative, not neutral
+# space. So a per-edge parking_exposure in [0,1] (1 = on/beside a large surface
+# lot, ramping to 0 by PARKING_REACH_M) discounts BOTH eyes signals: the buildings
+# behind the lot give no enclosure, and the shops behind it give little street
+# life. Deliberately does NOT touch car_safety in this first cut (curb-cut
+# exposure is a candidate extension). Boston commercial frontage has ~0 surface-lot
+# exposure (buildings at the lot line) ⇒ unaffected; Austin strips light up.
+# Missing parking layer ⇒ exposure 0 ⇒ no effect (optional, like landuse).
+PARKING_TAGS: list[str]              = ["surface"]   # parking=surface (exclude decks/underground)
+PARKING_MIN_AREA_M2: float          = 2000.0  # strip-mall lot scale; excludes a few spaces
+PARKING_REACH_M: float              = 30.0
+PARKING_ENCLOSURE_DISCOUNT: float   = 1.0    # enclosure *= (1 − d·exposure); building behind lot = no eyes
+PARKING_ACTIVITY_DISCOUNT: float    = 0.7    # activity  *= (1 − d·exposure); leave some (strip visitors do walk)
+# MOAT GATE — mere proximity to a lot is NOT the strip-mall signature; a walkable
+# street (South Congress) has lots beside/behind it yet keeps buildings at the lot
+# line. The penalty must fire only where the lot REPLACES active frontage, i.e. the
+# nearest building is set BACK behind the lot. Gate parking_exposure by a setback
+# ramp on the nearest-building distance: 0 when a building fronts within
+# PARKING_FRONTAGE_NEAR_M (active frontage — no moat), rising to 1 by
+# PARKING_SETBACK_FAR_M (building genuinely behind the lot). This is the measurable
+# "building setback / active-frontage" discriminator from the walkability-audit
+# literature, applied as the gate rather than as its own factor.
+PARKING_FRONTAGE_NEAR_M: float      = 8.0     # building this close ⇒ active frontage ⇒ no moat
+PARKING_SETBACK_FAR_M: float        = 25.0    # building beyond this ⇒ full moat
+
+# --- Freeway-frontage HAZARD VETO: the "community severance" / barrier effect ----
+# Walking ON/ALONG/ACROSS an at-grade freeway or its frontage road is a categorical
+# pedestrian hazard (the empirically-confirmed BARRIER EFFECT / community severance:
+# high-speed, high-volume roads suppress walking and wellbeing). The HDI geometric
+# mean + CATEGORY_FLOOR structurally cap how low a route can score (~35 even with
+# safety fully floored), so no safety-side lever can express a genuine freeway walk
+# (~15–25). This is modelled NON-COMPENSATORY: a per-edge `freeway_hazard` in [0,1]
+# is baked, and the ROUTE walk_score is multiplied by (1 − STRENGTH·H) OUTSIDE the
+# floored geometric mean — a semi-compensatory "screen then average". H is a
+# length-weighted POWER MEAN (worst-segment sensitive) so a route with a hazardous
+# stretch is judged by that stretch, not diluted by its calm parts.
+#   freeway_hazard(edge) = ramp(dist to [at-grade motorway/trunk ∪ frontage road],
+#                               FREEWAY_HAZARD_REACH_M) · (1 − openness)^OPEN_EXP
+# The convex openness gate EXEMPTS separated open pedestrian settings (the Charles
+# Esplanade beside Storrow, greenways) — grounded on the Esplanade, which the
+# barrier signal would otherwise wrongly crater. Boston's buried I-93 contributes
+# nothing (load_arterials drops tunnel/layer<0), which is why Boston never needed
+# this. A frontage road = a non-freeway arterial within FRONTAGE_FREEWAY_BUFFER_M of
+# a motorway/trunk for ≥ FRONTAGE_FREEWAY_FRAC of its length (parallel ⇒ high frac;
+# a perpendicular crossing ⇒ low ⇒ not flagged, keeping its milder proximity term).
+# BAKE-TIME (need a --force rebuild to change): buffer, frac, reaches, OPEN_EXP.
+# QUERY-TIME (no rebuild; re-baseline only): FREEWAY_VETO_EXPONENT, _STRENGTH.
+FRONTAGE_FREEWAY_BUFFER_M: float    = 35.0
+FRONTAGE_FREEWAY_FRAC: float        = 0.5
+FREEWAY_HAZARD_REACH_M: float       = 40.0
+FREEWAY_HAZARD_OPEN_REACH_M: float  = 150.0   # openness reach for the EXEMPTION (wider than eyes' 50)
+FREEWAY_HAZARD_OPEN_EXP: float      = 2.0     # convex gate (1−open)^k: spares riverside/greenway paths
+FREEWAY_VETO_EXPONENT: float        = 3.0     # route power-mean p (>1 ⇒ worst segments dominate)
+FREEWAY_VETO_STRENGTH: float        = 0.9     # walk_score *= (1 − STRENGTH·H)
 
 # amenity values that are street furniture / parking, NOT foot-traffic — weighted
 # 0 in `activity`. Any OTHER amenity, and every shop, counts as active frontage.

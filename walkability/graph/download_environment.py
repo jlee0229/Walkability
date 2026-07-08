@@ -40,6 +40,7 @@ from walkability.graph.inventory import BOSTON_PROFILE, CITY_PROFILES, CityProfi
 from walkability.scoring.weights import (
     ARTERIAL_HIGHWAY_TAGS,
     LANDUSE_TAGS,
+    PARKING_TAGS,
     ROAD_HIGHWAY_TAGS,
 )
 
@@ -196,6 +197,28 @@ def download_roads(profile: CityProfile, force: bool = False) -> None:
     _save(gdf[cols], path)
 
 
+def download_parking(profile: CityProfile, force: bool = False) -> None:
+    """Surface parking polygons → the strip-mall "false eyes" signal.
+
+    A large surface lot between sidewalk and building marks a car-oriented strip;
+    environment.py (load_parking) keeps only lots ≥ PARKING_MIN_AREA_M2 and
+    discounts the eyes credit near them. Geometry only (proximity is all we use)."""
+    path = profile.env_layer_path("parking")
+    if path.exists() and not force:
+        print(f"Parking already cached at {path.name} (use --force).")
+        return
+    print("Fetching surface parking (amenity=parking, parking=surface) ...")
+    gdf = ox.features_from_place(profile.places, tags={"amenity": "parking"})
+    # Keep surface lots: parking=surface, or untagged (OSM's default is surface).
+    # Explicitly drop multi-storey / underground decks — those are buildings, not
+    # the open tarmac moat we're penalising.
+    if "parking" in gdf.columns:
+        pk = gdf["parking"].astype("string")
+        gdf = gdf[pk.isin(PARKING_TAGS) | pk.isna()]
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
+    _save(gdf[["geometry"]], path)
+
+
 def main(profile: CityProfile, force: bool = False) -> None:
     print(f"[{profile.name}] Environment layers for: {', '.join(profile.places)}")
     download_arterials(profile, force)
@@ -204,6 +227,7 @@ def main(profile: CityProfile, force: bool = False) -> None:
     download_openspace(profile, force)
     download_landuse(profile, force)
     download_roads(profile, force)
+    download_parking(profile, force)
     print("Done. Now rebuild with --force so the environment factor bakes in.")
 
 

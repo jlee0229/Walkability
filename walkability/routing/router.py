@@ -48,7 +48,9 @@ from walkability.routing.cost import ALPHA_DEFAULT, edge_cost
 from walkability.scoring.factors import (
     RESTRICTED_FOOT_ACCESS,
     _EMPTY_WALK,
+    _as_float,
     _as_str,
+    apply_freeway_veto,
     combine_categories,
     compress_comfort,
     edge_category_scores,
@@ -228,6 +230,7 @@ def _build_route(
     edges: list[tuple] = []
     cat_by_edge: list[tuple[dict[str, float], float]] = []  # (category scores, length)
     conf_lengths: list[tuple[float, float]] = []            # (confidence, length)
+    haz_lengths: list[tuple[float, float]] = []             # (freeway_hazard, length)
     total_length = 0.0
     total_cost = 0.0
 
@@ -253,11 +256,15 @@ def _build_route(
         edges.append((u, v, key))
         cat_by_edge.append((cats, length))
         conf_lengths.append((conf, length))
+        haz_lengths.append((_as_float(data.get("freeway_hazard")) or 0.0, length))
         total_length += length
         total_cost += cost
 
     dimension_scores = _aggregate_route_dimensions(cat_by_edge)
     walk_score = combine_categories(dimension_scores) if dimension_scores else _EMPTY_WALK
+    # Non-compensatory barrier-effect veto: a freeway/frontage stretch craters the
+    # route score OUTSIDE the floored geometric mean (factors.apply_freeway_veto).
+    walk_score = apply_freeway_veto(walk_score, haz_lengths)
     if total_length > 0.0:
         confidence = sum(c * L for c, L in conf_lengths) / total_length
     else:

@@ -797,6 +797,8 @@ def _build_canonical_schema(
         # Sub-signals for diagnostics + offline lever isolation (env-rework §6).
         "industrial_exposure":      (env or {}).get("industrial_exposure"),
         "road_separation":          (env or {}).get("road_separation"),
+        "parking_exposure":         (env or {}).get("parking_exposure"),
+        "freeway_hazard":           (env or {}).get("freeway_hazard"),
         "eyes_uncapped":            (env or {}).get("eyes_uncapped"),
         "openness_score":           (env or {}).get("openness_score"),
 

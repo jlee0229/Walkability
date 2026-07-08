@@ -41,11 +41,14 @@ from pathlib import Path
 
 import geopandas as gpd
 import networkx as nx
+import numpy as np
 import osmnx as ox
 import pandas as pd
 
 from walkability.graph.inventory import BOSTON_PROFILE, CityProfile
 from walkability.scoring.weights import (
+    ARTERIAL_IMPUTE_K,
+    ARTERIAL_IMPUTE_MAX_M,
     ARTERIAL_REACH_M,
     CAR_SAFETY_CEIL,
     CEMETERY_OPENNESS_FACTOR,
@@ -59,8 +62,19 @@ from walkability.scoring.weights import (
     INDUSTRIAL_ENCLOSURE_DISCOUNT,
     INDUSTRIAL_REACH_M,
     MAXSPEED_SAFETY_ANCHORS,
+    FRONTAGE_FREEWAY_BUFFER_M,
+    FRONTAGE_FREEWAY_FRAC,
+    FREEWAY_HAZARD_OPEN_EXP,
+    FREEWAY_HAZARD_OPEN_REACH_M,
+    FREEWAY_HAZARD_REACH_M,
     OPENNESS_REACH_M,
     OPENSPACE_MIN_AREA_M2,
+    PARKING_ACTIVITY_DISCOUNT,
+    PARKING_ENCLOSURE_DISCOUNT,
+    PARKING_FRONTAGE_NEAR_M,
+    PARKING_MIN_AREA_M2,
+    PARKING_REACH_M,
+    PARKING_SETBACK_FAR_M,
     PEDESTRIAN_HIGHWAYS,
     POI_NOISE_AMENITIES,
     SEPARATION_REACH_M,
@@ -183,6 +197,17 @@ def load_roads(profile: CityProfile) -> gpd.GeoDataFrame:
     return _drop_underground(gdf)
 
 
+def load_parking(profile: CityProfile) -> gpd.GeoDataFrame:
+    """Cached large surface-parking polygons (strip-mall "false eyes" fix), in the
+    city's metric CRS. Kept only polygons with area ≥ PARKING_MIN_AREA_M2 so a few
+    on-street spaces don't fire — the signal is a strip-mall lot between sidewalk
+    and building. Optional input — callers handle its absence (parking_exposure
+    then → 0)."""
+    gdf = gpd.read_file(profile.env_layer_path("parking")).to_crs(profile.metric_crs)
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+    return gdf[gdf.geometry.area >= PARKING_MIN_AREA_M2].copy()
+
+
 def _empty_gdf(profile: CityProfile) -> gpd.GeoDataFrame:
     """An empty GeoDataFrame in the city's metric CRS — the no-op stand-in for an
     optional (landuse / roads) layer that hasn't been downloaded yet."""
@@ -237,14 +262,20 @@ def _is_arterial(highway) -> bool:
     return any(c in ARTERIAL_REACH_M for c in _base_classes(highway))
 
 
-def on_path_safety(highway, maxspeed, defaults: dict = DEFAULT_MAXSPEED_MPH) -> float:
+def on_path_safety(highway, maxspeed, defaults: dict = DEFAULT_MAXSPEED_MPH,
+                   imputed_speed: float | None = None) -> float:
     """Car-safety of the road you walk ALONG: 1.0 on a protected path, else from speed.
 
     ``defaults`` is the per-city fallback speed table (profile.maxspeed_defaults)
-    used when the road has no ``maxspeed`` tag."""
+    used when the road has no ``maxspeed`` tag. ``imputed_speed`` — for an untagged
+    ARTERIAL, the speed imputed from nearby same-class tagged arterials
+    (impute_arterial_speeds) — is preferred over the class default when the edge
+    carries no tag of its own."""
     if _is_pedestrian(highway):
         return 1.0
     speed = _parse_speed(maxspeed)
+    if speed is None and imputed_speed is not None:
+        speed = imputed_speed
     if speed is None:
         classes = _base_classes(highway)
         speeds = [defaults[c] for c in classes if c in defaults]
@@ -275,7 +306,8 @@ def _sat(x: float, sat: float) -> float:
 
 
 def perceived_safety(poi_weight: float, bldg_count: float, openness: float,
-                     *, enclosure_blind: bool, industrial: float = 0.0) -> tuple[float, float]:
+                     *, enclosure_blind: bool, industrial: float = 0.0,
+                     parking: float = 0.0) -> tuple[float, float]:
     """"Eyes" felt-safety as a probabilistic OR of three substitutable signals.
 
     activity (foot-traffic POIs), enclosure (buildings facing the street — dropped
@@ -288,6 +320,14 @@ def perceived_safety(poi_weight: float, bldg_count: float, openness: float,
     warehouse footprint is a building but provides no residential "eyes", so it
     shouldn't credit felt-safety. activity and openness are untouched — a genuinely
     busy industrial frontage keeps its activity.
+
+    ``parking`` (on/beside a large surface lot, [0,1]) is the **strip-mall "false
+    eyes" discount**: a parking moat between the sidewalk and the buildings means
+    the shops (activity) and buildings (enclosure) are present but provide no
+    street-level surveillance. It discounts BOTH — enclosure fully
+    (PARKING_ENCLOSURE_DISCOUNT) and activity partially (PARKING_ACTIVITY_DISCOUNT,
+    since some strip visitors do walk). openness is untouched. This is what stops a
+    stroad lined with strip retail from reading as a lively, safe street.
 
     **Graded ceiling (re-anchor Lever 1).** The cap is graded by ``openness`` (park /
     water adjacency), the eyes analog of env-rework B's graded car ceiling:
@@ -308,6 +348,9 @@ def perceived_safety(poi_weight: float, bldg_count: float, openness: float,
     activity  = _sat(poi_weight, EYES_POI_SAT)
     enclosure = 0.0 if enclosure_blind else _sat(bldg_count, EYES_BLDG_SAT)
     enclosure *= (1.0 - INDUSTRIAL_ENCLOSURE_DISCOUNT * industrial)
+    # Strip-mall parking moat: buildings/shops behind the lot give no street eyes.
+    enclosure *= (1.0 - PARKING_ENCLOSURE_DISCOUNT * parking)
+    activity  *= (1.0 - PARKING_ACTIVITY_DISCOUNT * parking)
     noisy_or  = 1.0 - (1.0 - activity) * (1.0 - enclosure) * (1.0 - openness)
     eyes_ceil = EYES_CEIL + (1.0 - EYES_CEIL) * openness
     return min(eyes_ceil, noisy_or), noisy_or
@@ -375,17 +418,30 @@ def build_environment_index(
                if profile.env_layer_path("landuse").exists() else _empty_gdf(profile))
     roads   = (load_roads(profile).cx[minx:maxx, miny:maxy]
                if profile.env_layer_path("roads").exists() else _empty_gdf(profile))
+    parking = (load_parking(profile).cx[minx:maxx, miny:maxy]
+               if profile.env_layer_path("parking").exists() else _empty_gdf(profile))
     print(f"  Features in area: {len(arterials)} arterials, {len(buildings)} buildings, "
           f"{len(pois)} POIs, {len(openspace)} open spaces, {len(landuse)} industrial, "
-          f"{len(roads)} roads")
+          f"{len(roads)} roads, {len(parking)} parking")
+
+    # Impute untagged arterials' posted speed from nearby same-class tagged
+    # arterials ONCE, then share it with both the off-path (nearby-arterial) and
+    # on-path (walk-along-arterial) car-safety paths so a road reads one speed.
+    if not arterials.empty:
+        arterials = arterials.copy()
+        arterials["imp_speed"] = impute_arterial_speeds(arterials, profile.maxspeed_defaults)
 
     n = len(edges_metric)
     off_scores  = _arterial_scores(edges_metric, arterials, profile.maxspeed_defaults)  # off-path
+    on_impute   = _on_path_imputed_speeds(edges_metric, arterials)  # untagged arterial on-path
     poi_weight  = _buffer_sum(edges_metric, pois, EYES_BUFFER_M, weight_col="weight")
     bldg_counts = _buffer_sum(edges_metric, buildings, EYES_BUFFER_M)
     openness    = _openness_scores(edges_metric, openspace)
     industrial  = _industrial_scores(edges_metric, landuse)   # A: truck/warehouse exposure
     separation  = _separation_scores(edges_metric, roads)     # B: distance from any road
+    parking_exp = _parking_scores(edges_metric, parking)      # strip-mall false-eyes discount
+    bldg_dist   = _building_dist(edges_metric, buildings)     # setback gate for the moat
+    freeway_haz = _freeway_hazard_scores(edges_metric, arterials, openspace)  # barrier-effect veto input
 
     service_col  = (edges_metric["service"]  if "service"  in edges_metric.columns else [None] * n)
     maxspeed_col = (edges_metric["maxspeed"] if "maxspeed" in edges_metric.columns else [None] * n)
@@ -396,7 +452,11 @@ def build_environment_index(
                                  service_col, maxspeed_col):
         ind = industrial.get(eid, 0.0)
         sep = separation.get(eid, 0.0)
-        on  = on_path_safety(hwy, ms, profile.maxspeed_defaults)  # the road you walk along
+        # Gate raw parking proximity by building setback → the moat signal: a lot
+        # only kills the eyes where it REPLACES active frontage (buildings set back).
+        park = _parking_moat(parking_exp.get(eid, 0.0), bldg_dist.get(eid, float("inf")))
+        on  = on_path_safety(hwy, ms, profile.maxspeed_defaults,  # the road you walk along
+                             imputed_speed=on_impute.get(eid))
         off = 1.0 if _is_arterial(hwy) else off_scores.get(eid, 1.0)  # nearby arterials
         # B: GRADED ceiling. A road-adjacent path (sep 0) tops at CAR_SAFETY_CEIL;
         # a genuinely road-separated path (sep→1, a greenway / ped bridge) climbs
@@ -407,7 +467,7 @@ def build_environment_index(
         car  = car * (1.0 - INDUSTRIAL_CAR_PENALTY * ind)
         e, e_unc = perceived_safety(
             poi_weight.get(eid, 0.0), bldg_counts.get(eid, 0.0), openness.get(eid, 0.0),
-            enclosure_blind=_enclosure_blind(hwy, svc), industrial=ind)
+            enclosure_blind=_enclosure_blind(hwy, svc), industrial=ind, parking=park)
         # Eyes can't rescue a low-car_safety road beyond a per-city cap: a
         # strip-mall's foot traffic shouldn't make a 45 mph stroad read as safe.
         e_eff = min(e, car + cap) if cap is not None else e
@@ -423,6 +483,8 @@ def build_environment_index(
             # grading (eyes_uncapped is the pre-cap noisy-OR) without a rebuild.
             "industrial_exposure":      round(ind, 4),
             "road_separation":          round(sep, 4),
+            "parking_exposure":         round(park, 4),
+            "freeway_hazard":           round(freeway_haz.get(eid, 0.0), 4),
             "eyes_uncapped":            round(e_unc, 4),
             "openness_score":           round(openness.get(eid, 0.0), 4),
         }
@@ -501,6 +563,131 @@ def _industrial_scores(
     return scores
 
 
+def _parking_scores(
+    edges_metric: gpd.GeoDataFrame,
+    parking:      gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge surface-parking exposure: 1 on/beside a large lot, ramping to 0 at
+    PARKING_REACH_M (one nearest-polygon join). Missing/empty ⇒ {} (0)."""
+    if parking.empty:
+        return {}
+    joined = gpd.sjoin_nearest(
+        edges_metric[["edge_id", "geometry"]],
+        parking[["geometry"]],
+        how="left",
+        distance_col="dist",
+    )
+    joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    scores: dict[tuple, float] = {}
+    for eid, dist in zip(joined["edge_id"], joined["dist"]):
+        scores[eid] = 0.0 if pd.isna(dist) else max(0.0, 1.0 - float(dist) / PARKING_REACH_M)
+    return scores
+
+
+def _building_dist(
+    edges_metric: gpd.GeoDataFrame,
+    buildings:    gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge distance (m) to the nearest building — the setback / active-frontage
+    measure that gates the parking moat. Missing/empty ⇒ {} (⇒ treated as no
+    frontage, so the gate opens; harmless since parking layer is then usually
+    absent too)."""
+    if buildings.empty:
+        return {}
+    joined = gpd.sjoin_nearest(
+        edges_metric[["edge_id", "geometry"]],
+        buildings[["geometry"]],
+        how="left",
+        distance_col="dist",
+    )
+    joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    return {eid: (float("inf") if pd.isna(d) else float(d))
+            for eid, d in zip(joined["edge_id"], joined["dist"])}
+
+
+def _parking_moat(parking_exp: float, bldg_dist: float) -> float:
+    """Gate raw parking exposure by building setback → the strip-mall MOAT signal.
+
+    No penalty when a building fronts within PARKING_FRONTAGE_NEAR_M (active
+    frontage, e.g. South Congress — lots are beside/behind, not a moat); full
+    exposure once the nearest building is past PARKING_SETBACK_FAR_M (the lot sits
+    between sidewalk and building)."""
+    span = PARKING_SETBACK_FAR_M - PARKING_FRONTAGE_NEAR_M
+    gate = 1.0 if span <= 0 else (bldg_dist - PARKING_FRONTAGE_NEAR_M) / span
+    return parking_exp * max(0.0, min(1.0, gate))
+
+
+def _frontage_roads(arterials: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Non-freeway arterials that run parallel-adjacent to an at-grade motorway/trunk
+    for ≥ FRONTAGE_FREEWAY_FRAC of their length — the freeway frontage-road detector.
+
+    The fraction-of-length-within-buffer metric separates a PARALLEL frontage
+    (frac→1) from a PERPENDICULAR crossing (frac→0, briefly near) with no bearing
+    math. ``arterials`` is already underground-dropped by load_arterials, so a buried
+    freeway grows no frontage (Boston's Big Dig)."""
+    if arterials.empty:
+        return arterials.iloc[0:0]
+    base = arterials["highway"].map(lambda h: (_base_classes(h) or [""])[0])
+    free = arterials[base.isin(("motorway", "trunk"))]
+    cand = arterials[~base.isin(("motorway", "trunk"))]
+    if free.empty or cand.empty:
+        return arterials.iloc[0:0]
+    buf = free.geometry.buffer(FRONTAGE_FREEWAY_BUFFER_M).union_all()
+    frac = (cand.geometry.intersection(buf).length
+            / cand.geometry.length.replace(0, np.nan)).fillna(0.0)
+    return cand[frac >= FRONTAGE_FREEWAY_FRAC]
+
+
+def _freeway_hazard_scores(
+    edges_metric: gpd.GeoDataFrame,
+    arterials:    gpd.GeoDataFrame,
+    openspace:    gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-edge freeway-frontage hazard in [0,1] — the barrier-effect / severance
+    signal that the route veto (factors.apply_freeway_veto) acts on.
+
+    ``hazard = ramp(dist to [at-grade motorway/trunk ∪ frontage road], REACH)
+               · (1 − openness)^OPEN_EXP``, where openness ramps over a WIDE reach
+    (FREEWAY_HAZARD_OPEN_REACH_M) so a separated/open pedestrian setting (riverside
+    path, greenway) is exempted; the convex exponent spares mostly-open edges while
+    leaving a bare frontage (openness≈0) at full hazard. Empty when no freeway is
+    near (⇒ 0, no veto)."""
+    base = arterials["highway"].map(lambda h: (_base_classes(h) or [""])[0]) if not arterials.empty else None
+    free = arterials[base.isin(("motorway", "trunk"))] if base is not None else arterials
+    frontage = _frontage_roads(arterials)
+    parts = [g for g in (free, frontage) if not g.empty]
+    if not parts:
+        return {}
+    haz_geom = pd.concat([p[["geometry"]] for p in parts], ignore_index=True)
+
+    jh = gpd.sjoin_nearest(edges_metric[["edge_id", "geometry"]],
+                           haz_geom, how="left", distance_col="dist")
+    jh = jh.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    haz_dist = dict(zip(jh["edge_id"], jh["dist"]))
+
+    open_dist: dict = {}
+    if not openspace.empty:
+        jo = gpd.sjoin_nearest(edges_metric[["edge_id", "geometry"]],
+                               openspace[["geometry"]], how="left", distance_col="dist")
+        jo = jo.sort_values("dist").drop_duplicates("edge_id", keep="first")
+        open_dist = dict(zip(jo["edge_id"], jo["dist"]))
+
+    scores: dict[tuple, float] = {}
+    for eid in edges_metric["edge_id"]:
+        d = haz_dist.get(eid)
+        if d is None or pd.isna(d):
+            continue
+        ramp = max(0.0, 1.0 - float(d) / FREEWAY_HAZARD_REACH_M)
+        if ramp <= 0.0:
+            continue
+        od = open_dist.get(eid)
+        openness = 0.0 if od is None or pd.isna(od) else max(0.0, 1.0 - float(od) / FREEWAY_HAZARD_OPEN_REACH_M)
+        haz = ramp * (1.0 - openness) ** FREEWAY_HAZARD_OPEN_EXP
+        if haz > 0.0:
+            scores[eid] = haz
+    return scores
+
+
 def _separation_scores(
     edges_metric: gpd.GeoDataFrame,
     roads:        gpd.GeoDataFrame,
@@ -523,6 +710,52 @@ def _separation_scores(
     return scores
 
 
+def impute_arterial_speeds(
+    arterials: gpd.GeoDataFrame,
+    defaults:  dict = DEFAULT_MAXSPEED_MPH,
+    k:         int = ARTERIAL_IMPUTE_K,
+    max_dist:  float = ARTERIAL_IMPUTE_MAX_M,
+) -> np.ndarray:
+    """Posted speed (mph) for every arterial row, imputing the untagged ones.
+
+    A tagged arterial keeps its own ``maxspeed``. An untagged one takes the MEDIAN
+    speed of the nearest ``k`` tagged arterials of the SAME base class within
+    ``max_dist`` metres, falling back to the class default only when none is that
+    close. Posted speed tracks location as much as class (a downtown secondary
+    ~30 mph, a suburban one ~45), so this replaces the flat class default with the
+    local level implied by the tagged roads nearby. Matching on class stops a
+    fast motorway ramp from inflating a calm secondary; the median is robust to a
+    lone mis-tagged neighbour. ``arterials`` must already be in a metric CRS.
+
+    Returns a float array aligned to ``arterials.index`` order."""
+    n = len(arterials)
+    bases = arterials["highway"].map(lambda h: (_base_classes(h) or ["secondary"])[0]).to_numpy()
+    ms_col = arterials["maxspeed"] if "maxspeed" in arterials.columns else [None] * n
+    own = np.array([_parse_speed(m) for m in ms_col], dtype=float)  # NaN where untagged
+    cent = arterials.geometry.centroid
+    xy = np.column_stack([cent.x.to_numpy(), cent.y.to_numpy()])
+
+    speeds = own.copy()
+    for base in np.unique(bases):
+        cls = bases == base
+        default = defaults.get(base, 30.0)
+        tagged = cls & ~np.isnan(own)
+        todo = np.where(cls & np.isnan(own))[0]
+        if todo.size == 0:
+            continue
+        t_idx = np.where(tagged)[0]
+        if t_idx.size == 0:                       # no same-class anchor anywhere
+            speeds[todo] = default
+            continue
+        t_xy, t_spd = xy[t_idx], own[t_idx]
+        for i in todo:
+            d = np.hypot(t_xy[:, 0] - xy[i, 0], t_xy[:, 1] - xy[i, 1])
+            near = np.argsort(d)[:k]
+            near = near[d[near] <= max_dist]
+            speeds[i] = float(np.median(t_spd[near])) if near.size else default
+    return speeds
+
+
 def _arterial_scores(
     edges_metric: gpd.GeoDataFrame,
     arterials:    gpd.GeoDataFrame,
@@ -537,12 +770,14 @@ def _arterial_scores(
     art = arterials.copy()
     bases = art["highway"].map(lambda h: (_base_classes(h) or ["secondary"])[0])
     # Resolve each arterial's speed: its real maxspeed tag if present, else the
-    # class default. Hostility (penalty DEPTH) follows speed; reach (penalty
+    # speed IMPUTED from nearby same-class tagged arterials (falling back to the
+    # class default only when isolated) — see impute_arterial_speeds. Reuse the
+    # column if the caller already imputed (shared with the on-path resolution),
+    # else compute it here. Hostility (penalty DEPTH) follows speed; reach (penalty
     # DISTANCE) stays class-based — a big road's threat extends further regardless
     # of posted speed.
-    ms_col = art["maxspeed"] if "maxspeed" in art.columns else [None] * len(art)
-    speeds = [(_parse_speed(m) or defaults.get(b, 30.0))
-              for b, m in zip(bases, ms_col)]
+    speeds = (art["imp_speed"].to_numpy() if "imp_speed" in art.columns
+              else impute_arterial_speeds(art, defaults))
     art["reach"]     = [ARTERIAL_REACH_M.get(b, _DEFAULT_REACH_M) for b in bases]
     art["hostility"] = [_arterial_hostility(s) for s in speeds]
     joined = gpd.sjoin_nearest(
@@ -563,6 +798,33 @@ def _arterial_scores(
         else:
             scores[eid] = off_path_safety(float(dist), float(reach), float(hostility))
     return scores
+
+
+def _on_path_imputed_speeds(
+    edges_metric: gpd.GeoDataFrame,
+    arterials:    gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Per-arterial-edge imputed ON-PATH speed for edges lacking their own tag.
+
+    An arterial edge in the walk graph coincides with a feature in the (already
+    imputed) ``arterials`` layer, so a nearest join hands each untagged arterial
+    edge the same imputed speed used off-path — one consistent speed per road.
+    Non-arterial edges are not imputed (their off-tag speed is the class default,
+    as before). Returns ``{edge_id: speed_mph}`` only for arterial edges."""
+    if arterials.empty or "imp_speed" not in arterials.columns:
+        return {}
+    art_edges = edges_metric[edges_metric["highway"].map(_is_arterial)]
+    if art_edges.empty:
+        return {}
+    joined = gpd.sjoin_nearest(
+        art_edges[["edge_id", "geometry"]],
+        arterials[["geometry", "imp_speed"]],
+        how="left",
+        distance_col="dist",
+    )
+    joined = joined.sort_values("dist").drop_duplicates("edge_id", keep="first")
+    return {eid: float(s) for eid, s in zip(joined["edge_id"], joined["imp_speed"])
+            if pd.notna(s)}
 
 
 def _buffer_sum(

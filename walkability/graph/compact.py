@@ -55,6 +55,7 @@ RUNTIME_EDGE_FLOAT_FIELDS: tuple[str, ...] = (
     "surface_score", "surface_confidence", "surface_material_score",
     "width_score",
     "environment_score", "environment_confidence",
+    "freeway_hazard",   # barrier-effect veto input (factors.apply_freeway_veto)
     "walk_score", "walk_confidence",
 )
 

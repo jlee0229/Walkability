@@ -357,6 +357,20 @@ AUSTIN_ROUTES: list[dict] = [
         "origin": (30.3928, -97.7250), "dest": (30.3950, -97.7228), "alpha": 0.0,
         "look_for": "BOTTOM-END: highway frontage road — the most car-dependent case. Should be at or near the absolute floor of Austin's range.",
     },
+    {
+        # FREEWAY-VETO target: a genuine at-grade US-183 access/frontage road.
+        "name": "us183_frontage_anderson",
+        "area": "US-183 frontage road (@ Anderson Ln)",
+        "origin": (30.3485, -97.7142), "dest": (30.3505, -97.7135), "alpha": 0.0,
+        "look_for": "VETO TARGET / ABSOLUTE FLOOR: walking a US-183 freeway frontage — fast traffic, on-ramps, no shelter. The barrier-effect veto should crater this to ~10–30. Is it clearly the worst of Austin's range?",
+    },
+    {
+        # Second, independent freeway frontage (I-35 access road) — consistency check.
+        "name": "i35_frontage_south",
+        "area": "I-35 frontage road (S, near St Elmo)",
+        "origin": (30.2432, -97.7347), "dest": (30.2468, -97.7344), "alpha": 0.0,
+        "look_for": "VETO TARGET: an I-35 access-road sidewalk — confirms the veto fires consistently on freeway frontages, not one lucky spot. Should also be near the floor.",
+    },
 ]
 
 

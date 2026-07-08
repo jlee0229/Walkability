@@ -51,6 +51,8 @@ from walkability.scoring.weights import (
     COMFORT_COMPRESS_K,
     COMFORT_COMPRESS_KNEE,
     FACTOR_WEIGHTS,
+    FREEWAY_VETO_EXPONENT,
+    FREEWAY_VETO_STRENGTH,
 )
 
 
@@ -251,6 +253,38 @@ def combine_categories(category_values: dict[str, float]) -> float:
         sum(CATEGORY_WEIGHTS.get(c, 1.0) * math.log(v) for c, v in category_values.items())
         / cat_wsum
     )
+
+
+def route_freeway_hazard(
+    haz_lengths: list[tuple[float, float]],
+    exponent: float = FREEWAY_VETO_EXPONENT,
+) -> float:
+    """Route-level freeway-frontage hazard: a length-weighted POWER MEAN of the
+    per-edge ``freeway_hazard`` (``haz_lengths`` = [(hazard, length), ...]).
+
+    ``exponent`` > 1 makes the worst segments dominate (peak/weakest-link), so a
+    route with a hazardous stretch is judged by that stretch rather than having it
+    averaged away by its calm parts. Returns 0 when nothing is exposed."""
+    total = sum(L for _, L in haz_lengths)
+    if total <= 0.0 or all(h <= 0.0 for h, _ in haz_lengths):
+        return 0.0
+    p = exponent
+    return (sum(L * (h ** p) for h, L in haz_lengths) / total) ** (1.0 / p)
+
+
+def apply_freeway_veto(
+    walk_score: float,
+    haz_lengths: list[tuple[float, float]],
+    strength: float = FREEWAY_VETO_STRENGTH,
+) -> float:
+    """Multiply a ROUTE ``walk_score`` by ``(1 − strength·H)``, H = route_freeway_hazard.
+
+    Applied OUTSIDE ``combine_categories`` so it bypasses ``CATEGORY_FLOOR`` — the
+    barrier effect of an at-grade freeway/frontage is treated NON-COMPENSATORILY
+    (a "screen" on top of the compensatory HDI mean), the only way to express a
+    genuine freeway walk (~15–25) that the floored geometric mean caps near ~35.
+    A no-hazard route (H=0) is returned unchanged."""
+    return walk_score * (1.0 - strength * route_freeway_hazard(haz_lengths))
 
 
 def edge_category_scores(
