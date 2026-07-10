@@ -322,10 +322,10 @@ AUSTIN_ROUTES: list[dict] = [
     },
     # ---- bottom end: stroads / car-dependent arterials (the calibration payload) ----
     {
-        "name": "north_lamar_rundberg",
-        "area": "North Lamar Blvd (@ Rundberg)",
-        "origin": (30.3560, -97.7085), "dest": (30.3586, -97.7080), "alpha": 0.0,
-        "look_for": "BOTTOM-END: classic Austin stroad — wide fast arterial, strip malls, hostile crossings, but a sidewalk exists. Should score LOW (safety floors it). Is it low enough?",
+        "name": "north_lamar_arterial",
+        "area": "North Lamar Blvd (beside the arterial)",
+        "origin": (30.3845, -97.6850), "dest": (30.3811, -97.6868), "alpha": 0.0,
+        "look_for": "BOTTOM-END: classic Austin stroad — wide fast arterial, strip malls, hostile crossings. Coords put the walk BESIDE N.Lamar (the old @Rundberg coords mis-routed onto quiet residential side streets). Should score LOW. Is it low enough? (a lanes/width amplifier is the candidate lever.)",
     },
     {
         "name": "ben_white_s1st",
