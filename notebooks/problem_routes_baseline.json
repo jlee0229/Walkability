@@ -26,57 +26,57 @@
   "charlestown_sullivan_cross": {
     "found": true,
     "length": 882.6,
-    "walk_score": 0.6602,
+    "walk_score": 0.6725,
     "confidence": 0.7939,
     "hops": 18,
     "path_fp": 128264894
   },
   "newmarket_massave_arterial": {
     "found": true,
-    "length": 1627.7,
-    "walk_score": 0.6599,
-    "confidence": 0.8512,
-    "hops": 40,
-    "path_fp": 899791133
+    "length": 2027.1,
+    "walk_score": 0.6925,
+    "confidence": 0.8401,
+    "hops": 59,
+    "path_fp": 2985309721
   },
   "nubian_roxbury_washington": {
     "found": true,
     "length": 844.4,
-    "walk_score": 0.8238,
+    "walk_score": 0.8217,
     "confidence": 0.8473,
     "hops": 20,
     "path_fp": 3026457617
   },
   "allston_to_jamaica_plain": {
     "found": true,
-    "length": 5923.1,
-    "walk_score": 0.8383,
-    "confidence": 0.7773,
-    "hops": 182,
-    "path_fp": 2760805414
+    "length": 6561.9,
+    "walk_score": 0.8361,
+    "confidence": 0.8398,
+    "hops": 163,
+    "path_fp": 1829375946
   },
   "charlestown_to_kendall": {
     "found": true,
     "length": 3810.7,
-    "walk_score": 0.8387,
+    "walk_score": 0.6078,
     "confidence": 0.8188,
     "hops": 111,
     "path_fp": 594033325
   },
   "sullivan_to_assembly": {
     "found": true,
-    "length": 2009.7,
-    "walk_score": 0.664,
-    "confidence": 0.7169,
-    "hops": 69,
-    "path_fp": 4041193041
+    "length": 2113.6,
+    "walk_score": 0.3672,
+    "confidence": 0.7167,
+    "hops": 64,
+    "path_fp": 1221187322
   },
   "eastie_to_chelsea": {
     "found": true,
-    "length": 2624.7,
-    "walk_score": 0.8269,
-    "confidence": 0.8194,
-    "hops": 92,
-    "path_fp": 312190501
+    "length": 2886.2,
+    "walk_score": 0.6372,
+    "confidence": 0.8135,
+    "hops": 82,
+    "path_fp": 1557631063
   }
 }
