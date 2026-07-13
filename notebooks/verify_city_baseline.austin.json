@@ -1,0 +1,448 @@
+{
+  "_meta": {
+    "city": "austin",
+    "seed": 7,
+    "graph_fingerprint": "543211ea0641bf6f236ad49968abadd0",
+    "n_rows": 55
+  },
+  "short_band:short#0": {
+    "found": true,
+    "length": 396.2,
+    "walk_score": 0.6714,
+    "confidence": 0.9415,
+    "hops": 12,
+    "path_fp": 849303704
+  },
+  "short_band:short#1": {
+    "found": true,
+    "length": 756.8,
+    "walk_score": 0.7719,
+    "confidence": 0.9625,
+    "hops": 23,
+    "path_fp": 2226424631
+  },
+  "short_band:short#2": {
+    "found": true,
+    "length": 928.7,
+    "walk_score": 0.7763,
+    "confidence": 0.9538,
+    "hops": 34,
+    "path_fp": 3014946885
+  },
+  "short_band:short#3": {
+    "found": true,
+    "length": 938.4,
+    "walk_score": 0.2349,
+    "confidence": 0.7782,
+    "hops": 30,
+    "path_fp": 2319093094
+  },
+  "short_band:short#4": {
+    "found": true,
+    "length": 905.7,
+    "walk_score": 0.8207,
+    "confidence": 0.9625,
+    "hops": 15,
+    "path_fp": 1333651549
+  },
+  "short_band:short#5": {
+    "found": true,
+    "length": 560.6,
+    "walk_score": 0.5557,
+    "confidence": 0.9625,
+    "hops": 14,
+    "path_fp": 3845235866
+  },
+  "mid_band:mid#0": {
+    "found": true,
+    "length": 2219.9,
+    "walk_score": 0.8363,
+    "confidence": 0.8769,
+    "hops": 104,
+    "path_fp": 2966445091
+  },
+  "mid_band:mid#1": {
+    "found": true,
+    "length": 6047.3,
+    "walk_score": 0.2531,
+    "confidence": 0.834,
+    "hops": 90,
+    "path_fp": 2658689579
+  },
+  "mid_band:mid#2": {
+    "found": true,
+    "length": 3676.1,
+    "walk_score": 0.2572,
+    "confidence": 0.781,
+    "hops": 66,
+    "path_fp": 3248044470
+  },
+  "mid_band:mid#3": {
+    "found": true,
+    "length": 3366.7,
+    "walk_score": 0.5654,
+    "confidence": 0.8548,
+    "hops": 50,
+    "path_fp": 2694729744
+  },
+  "mid_band:mid#4": {
+    "found": true,
+    "length": 2487.8,
+    "walk_score": 0.6721,
+    "confidence": 0.8729,
+    "hops": 44,
+    "path_fp": 747705258
+  },
+  "mid_band:mid#5": {
+    "found": true,
+    "length": 1703.9,
+    "walk_score": 0.4859,
+    "confidence": 0.8888,
+    "hops": 41,
+    "path_fp": 1757195097
+  },
+  "long_band:long#0": {
+    "found": true,
+    "length": 14041.1,
+    "walk_score": 0.6824,
+    "confidence": 0.8949,
+    "hops": 255,
+    "path_fp": 2362988042
+  },
+  "long_band:long#1": {
+    "found": true,
+    "length": 13815.9,
+    "walk_score": 0.387,
+    "confidence": 0.9157,
+    "hops": 237,
+    "path_fp": 3996682981
+  },
+  "long_band:long#2": {
+    "found": true,
+    "length": 8105.8,
+    "walk_score": 0.5896,
+    "confidence": 0.901,
+    "hops": 115,
+    "path_fp": 458628364
+  },
+  "long_band:long#3": {
+    "found": true,
+    "length": 5620.7,
+    "walk_score": 0.6403,
+    "confidence": 0.9435,
+    "hops": 148,
+    "path_fp": 645176431
+  },
+  "long_band:long#4": {
+    "found": true,
+    "length": 6788.9,
+    "walk_score": 0.6766,
+    "confidence": 0.9301,
+    "hops": 200,
+    "path_fp": 1170344670
+  },
+  "long_band:long#5": {
+    "found": true,
+    "length": 14281.3,
+    "walk_score": 0.3443,
+    "confidence": 0.8923,
+    "hops": 214,
+    "path_fp": 255789630
+  },
+  "data_seam_straddling:seam#0": {
+    "found": true,
+    "length": 6677.8,
+    "walk_score": 0.2908,
+    "confidence": 0.71,
+    "hops": 182,
+    "path_fp": 2058344153
+  },
+  "data_seam_straddling:seam#1": {
+    "found": true,
+    "length": 21498.4,
+    "walk_score": 0.4263,
+    "confidence": 0.8555,
+    "hops": 280,
+    "path_fp": 29405007
+  },
+  "data_seam_straddling:seam#2": {
+    "found": true,
+    "length": 6956.2,
+    "walk_score": 0.5364,
+    "confidence": 0.8853,
+    "hops": 103,
+    "path_fp": 1988286320
+  },
+  "data_seam_straddling:seam#3": {
+    "found": true,
+    "length": 12959.0,
+    "walk_score": 0.2539,
+    "confidence": 0.8116,
+    "hops": 199,
+    "path_fp": 325653694
+  },
+  "data_seam_straddling:seam#4": {
+    "found": true,
+    "length": 9295.2,
+    "walk_score": 0.2926,
+    "confidence": 0.7669,
+    "hops": 151,
+    "path_fp": 4199143810
+  },
+  "data_seam_straddling:seam#5": {
+    "found": true,
+    "length": 9194.0,
+    "walk_score": 0.2264,
+    "confidence": 0.8197,
+    "hops": 156,
+    "path_fp": 3563105180
+  },
+  "over_water_crossing:water#0": {
+    "found": true,
+    "length": 2129.4,
+    "walk_score": 0.7116,
+    "confidence": 0.763,
+    "hops": 48,
+    "path_fp": 3885024448
+  },
+  "over_water_crossing:water#1": {
+    "found": true,
+    "length": 1541.1,
+    "walk_score": 0.7863,
+    "confidence": 0.8428,
+    "hops": 53,
+    "path_fp": 3415757498
+  },
+  "over_water_crossing:water#2": {
+    "found": true,
+    "length": 1347.9,
+    "walk_score": 0.6576,
+    "confidence": 0.8623,
+    "hops": 33,
+    "path_fp": 1064061158
+  },
+  "over_water_crossing:water#3": {
+    "found": true,
+    "length": 1493.3,
+    "walk_score": 0.7876,
+    "confidence": 0.9007,
+    "hops": 54,
+    "path_fp": 3108681226
+  },
+  "over_water_crossing:water#4": {
+    "found": true,
+    "length": 2459.2,
+    "walk_score": 0.7616,
+    "confidence": 0.899,
+    "hops": 77,
+    "path_fp": 2058883251
+  },
+  "walkability_anchors:high#0": {
+    "found": true,
+    "length": 632.4,
+    "walk_score": 0.8463,
+    "confidence": 0.944,
+    "hops": 35,
+    "path_fp": 3628610858
+  },
+  "walkability_anchors:high#1": {
+    "found": true,
+    "length": 643.7,
+    "walk_score": 0.8216,
+    "confidence": 0.9602,
+    "hops": 36,
+    "path_fp": 1725868058
+  },
+  "walkability_anchors:high#2": {
+    "found": true,
+    "length": 807.2,
+    "walk_score": 0.8842,
+    "confidence": 0.9625,
+    "hops": 28,
+    "path_fp": 630651383
+  },
+  "walkability_anchors:high#3": {
+    "found": true,
+    "length": 707.7,
+    "walk_score": 0.8533,
+    "confidence": 0.8702,
+    "hops": 23,
+    "path_fp": 1982575059
+  },
+  "walkability_anchors:low#0": {
+    "found": true,
+    "length": 241.1,
+    "walk_score": 0.1291,
+    "confidence": 0.7387,
+    "hops": 10,
+    "path_fp": 3995535832
+  },
+  "walkability_anchors:low#1": {
+    "found": true,
+    "length": 996.7,
+    "walk_score": 0.3078,
+    "confidence": 0.7327,
+    "hops": 13,
+    "path_fp": 3158640908
+  },
+  "walkability_anchors:low#2": {
+    "found": true,
+    "length": 1152.9,
+    "walk_score": 0.163,
+    "confidence": 0.8664,
+    "hops": 24,
+    "path_fp": 1123215696
+  },
+  "walkability_anchors:low#3": {
+    "found": true,
+    "length": 741.6,
+    "walk_score": 0.0417,
+    "confidence": 0.9174,
+    "hops": 8,
+    "path_fp": 3192419187
+  },
+  "alpha_floor_monotonicity:alpha#0": {
+    "found": true,
+    "length": 2356.4,
+    "walk_score": 0.4875,
+    "confidence": 0.9393,
+    "hops": 38,
+    "path_fp": 76484001
+  },
+  "alpha_floor_monotonicity:alpha#1": {
+    "found": true,
+    "length": 3105.5,
+    "walk_score": 0.493,
+    "confidence": 0.8821,
+    "hops": 90,
+    "path_fp": 3464665666
+  },
+  "alpha_floor_monotonicity:alpha#2": {
+    "found": true,
+    "length": 1632.7,
+    "walk_score": 0.1589,
+    "confidence": 0.873,
+    "hops": 23,
+    "path_fp": 3835124380
+  },
+  "alpha_floor_monotonicity:alpha#3": {
+    "found": true,
+    "length": 1962.0,
+    "walk_score": 0.6876,
+    "confidence": 0.9552,
+    "hops": 65,
+    "path_fp": 1903327611
+  },
+  "alpha_floor_monotonicity:alpha#4": {
+    "found": true,
+    "length": 2405.8,
+    "walk_score": 0.6782,
+    "confidence": 0.9244,
+    "hops": 84,
+    "path_fp": 1127059395
+  },
+  "determinism:det#0": {
+    "found": true,
+    "length": 1012.0,
+    "walk_score": 0.8314,
+    "confidence": 0.9625,
+    "hops": 22,
+    "path_fp": 3602691312
+  },
+  "foot_no_integrity:fn_s#0": {
+    "found": true,
+    "length": 784.5,
+    "walk_score": 0.8101,
+    "confidence": 0.9603,
+    "hops": 44,
+    "path_fp": 2441686578
+  },
+  "foot_no_integrity:fn_s#1": {
+    "found": true,
+    "length": 675.6,
+    "walk_score": 0.7966,
+    "confidence": 0.7665,
+    "hops": 45,
+    "path_fp": 3527044267
+  },
+  "foot_no_integrity:fn_s#2": {
+    "found": true,
+    "length": 1621.9,
+    "walk_score": 0.7692,
+    "confidence": 0.9606,
+    "hops": 27,
+    "path_fp": 3022567413
+  },
+  "foot_no_integrity:fn_m#0": {
+    "found": true,
+    "length": 5007.2,
+    "walk_score": 0.3727,
+    "confidence": 0.8667,
+    "hops": 87,
+    "path_fp": 1587216647
+  },
+  "foot_no_integrity:fn_m#1": {
+    "found": true,
+    "length": 2877.1,
+    "walk_score": 0.5252,
+    "confidence": 0.8396,
+    "hops": 34,
+    "path_fp": 3533193467
+  },
+  "foot_no_integrity:fn_m#2": {
+    "found": true,
+    "length": 990.3,
+    "walk_score": 0.7977,
+    "confidence": 0.9625,
+    "hops": 39,
+    "path_fp": 1772994250
+  },
+  "foot_no_integrity:fn_l#0": {
+    "found": true,
+    "length": 5686.5,
+    "walk_score": 0.2463,
+    "confidence": 0.9421,
+    "hops": 78,
+    "path_fp": 1642158688
+  },
+  "foot_no_integrity:fn_l#1": {
+    "found": true,
+    "length": 10723.9,
+    "walk_score": 0.3666,
+    "confidence": 0.8768,
+    "hops": 251,
+    "path_fp": 1750712349
+  },
+  "foot_no_integrity:fn_l#2": {
+    "found": true,
+    "length": 14975.2,
+    "walk_score": 0.4349,
+    "confidence": 0.9331,
+    "hops": 290,
+    "path_fp": 3884785542
+  },
+  "terminal_restricted_access:restricted@11667052608": {
+    "found": true,
+    "length": 1087.2,
+    "walk_score": 0.2417,
+    "confidence": 0.9563,
+    "hops": 29,
+    "path_fp": 481174482
+  },
+  "terminal_restricted_access:restricted@1421134768": {
+    "found": true,
+    "length": 362.7,
+    "walk_score": 0.4882,
+    "confidence": 0.8696,
+    "hops": 22,
+    "path_fp": 1696105885
+  },
+  "terminal_restricted_access:restricted@11174719218": {
+    "found": true,
+    "length": 413.5,
+    "walk_score": 0.7215,
+    "confidence": 0.9572,
+    "hops": 10,
+    "path_fp": 2669526942
+  }
+}

@@ -5,6 +5,13 @@ it's tied to a problem route**, in any region. Don't survey everything; record
 only what a flagged/odd route makes you go look at. Delete the `EXAMPLE_*` row
 once you've added real data.
 
+**Per-city files.** `ground_truth.csv` is Boston. `verify_city.py` (the per-city
+"loaded correctly" gate) emits an auto-picked calibration deck
+`<city>_calibration_survey.auto.html`; record its subjective ratings in a sibling
+`ground_truth.<city>.csv` (same columns; add a `route_key` column holding the
+battery route id shown on each card). This human pass is the ONE manual step in
+verifying a city — every structural check in `verify_city.py` is automated.
+
 Each column records reality so you can check it against what the scorer
 believes (use `diagnostics.breakdown_route` / `inspect_route_map` for the model
 side, and `audit_route` to find which routes are worth inspecting).

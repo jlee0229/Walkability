@@ -176,13 +176,10 @@ PROBLEM_ROUTES: list[dict] = [
 # Metrics + comparison
 # ---------------------------------------------------------------------------
 
-def measure(G, case: dict) -> dict:
-    """Compute the metrics we track for one problem route."""
-    alpha = case.get("alpha", ALPHA_DEFAULT)
-    routes = find_routes(G, tuple(case["origin"]), tuple(case["dest"]), alpha=alpha)
-    if not routes:
-        return {"found": False}
-    best = routes[0]
+def route_metrics(best) -> dict:
+    """The tracked metrics for one found route (shared by ``measure`` and the
+    per-city verify_city baseline, which already has the RouteResult in hand and
+    must not re-route to snapshot it)."""
     return {
         "found": True,
         "length": round(best.total_length, 1),
@@ -193,6 +190,15 @@ def measure(G, case: dict) -> dict:
         # crc32 (not hash()) so it's stable across processes regardless of node id type.
         "path_fp": zlib.crc32(",".join(map(str, best.nodes)).encode()),
     }
+
+
+def measure(G, case: dict) -> dict:
+    """Compute the metrics we track for one problem route."""
+    alpha = case.get("alpha", ALPHA_DEFAULT)
+    routes = find_routes(G, tuple(case["origin"]), tuple(case["dest"]), alpha=alpha)
+    if not routes:
+        return {"found": False}
+    return route_metrics(routes[0])
 
 
 def classify(name: str, base: dict | None, cur: dict) -> str:

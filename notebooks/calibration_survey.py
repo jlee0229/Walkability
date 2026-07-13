@@ -710,20 +710,103 @@ Answer per route; replies tune CATEGORY_WEIGHTS / CATEGORY_FLOOR and surface dat
 </body></html>"""
 
 
+# ---------------------------------------------------------------------------
+# Auto-picked survey — driven by the verify_city route battery (no hand-picking)
+# ---------------------------------------------------------------------------
+
+def auto_pick_routes(candidates: list[dict], k: int = 15) -> list[dict]:
+    """Pick ~``k`` routes spanning the observed walk-score spectrum plus every
+    "pinned" case (anchor / seam / water) from the verify_city battery output.
+
+    ``candidates`` are the dicts ``route_types.run_battery`` emits (keys:
+    ``name, area, origin, dest, alpha, walk, look_for, pin``). Pinned cases are
+    always kept (the extremes and the interesting data cases); the rest fill
+    across even quantiles of ``walk`` so the human sees the full range. Returns
+    ``case`` dicts ready for ``_survey`` (helper keys ``walk``/``pin`` stripped),
+    ordered high→low walk for the deck.
+    """
+    seen: set = set()
+    uniq: list[dict] = []
+    for c in candidates:
+        key = (round(c["origin"][0], 4), round(c["origin"][1], 4),
+               round(c["dest"][0], 4), round(c["dest"][1], 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(c)
+
+    pinned = [c for c in uniq if c.get("pin")]
+    rest = sorted((c for c in uniq if not c.get("pin")), key=lambda c: c["walk"])
+    picked = list(pinned)
+    slots = max(0, k - len(picked))
+    if slots and rest:
+        if slots == 1:
+            idxs = [len(rest) // 2]
+        else:
+            idxs = sorted({round(i * (len(rest) - 1) / (slots - 1)) for i in range(slots)})
+        picked.extend(rest[i] for i in idxs)
+
+    picked.sort(key=lambda c: c["walk"], reverse=True)
+    return [{key: v for key, v in c.items() if key not in ("walk", "pin")}
+            for c in picked]
+
+
+def build_auto_survey(G, candidates: list[dict], city: str, k: int = 15,
+                      out: Path | None = None) -> Path:
+    """Render the auto-picked calibration deck from battery candidates → HTML.
+
+    Reuses ``_survey`` / ``build_html`` unchanged, so the auto deck has the same
+    per-dimension bars, numbered segments and Street View links as the hand-picked
+    one. This is the single genuinely-manual verification step: the human fills
+    subjective ratings, everything structural is automated.
+    """
+    cases = auto_pick_routes(candidates, k=k)
+    out = out or Path(__file__).with_name(f"{city}_calibration_survey.auto.html")
+    results = []
+    for case in cases:
+        try:
+            r = _survey(G, case)
+        except Exception as exc:
+            r = {**case, "found": False, "error": f"{type(exc).__name__}: {exc}"}
+        results.append(r)
+    out.write_text(build_html(results, city=f"{city.capitalize()} (auto)"))
+    print(f"Wrote {sum(1 for r in results if r.get('found'))}/{len(results)} "
+          f"auto-picked routes → {out}")
+    return out
+
+
 def main():
     from walkability.graph.inventory import CITY_PROFILES
 
     ap = argparse.ArgumentParser(description="Generate the calibration survey HTML.")
-    ap.add_argument("--city", default="boston", choices=sorted(CITY_ROUTES),
+    ap.add_argument("--city", default="boston", choices=sorted(CITY_PROFILES),
                     help="City survey to generate (default: boston).")
     ap.add_argument("--graph", default=None,
                     help="Enriched graph path (default: the city's profile enriched_path).")
     ap.add_argument("--out", default=None,
-                    help="Output HTML (default: <city>_calibration_survey.html for non-Boston).")
+                    help="Output HTML (default: <city>_calibration_survey[.auto].html).")
+    ap.add_argument("--auto", action="store_true",
+                    help="Auto-pick routes from the verify_city route battery instead "
+                         "of the hand-picked CITY_ROUTES (works for any city).")
+    ap.add_argument("--k", type=int, default=15, help="Auto: number of routes to pick.")
+    ap.add_argument("--seed", type=int, default=7, help="Auto: battery sampling seed.")
     args = ap.parse_args()
 
-    routes = CITY_ROUTES[args.city]
     graph_path = args.graph or str(CITY_PROFILES[args.city].enriched_path)
+    print(f"Loading {graph_path} ...")
+    G = load_graph(Path(graph_path))
+
+    if args.auto:
+        import route_types
+        ctx = route_types.Ctx(G, CITY_PROFILES[args.city], seed=args.seed)
+        cands = route_types.run_battery(ctx, lambda *a, **k: None)[0]
+        build_auto_survey(G, cands, args.city, k=args.k,
+                          out=Path(args.out) if args.out else None)
+        return
+
+    if args.city not in CITY_ROUTES:
+        raise SystemExit(f"No hand-picked routes for {args.city}; use --auto.")
+    routes = CITY_ROUTES[args.city]
     if args.out:
         out = Path(args.out)
     elif args.city == "boston":
@@ -731,8 +814,6 @@ def main():
     else:
         out = Path(__file__).with_name(f"{args.city}_calibration_survey.html")
 
-    print(f"Loading {graph_path} ...")
-    G = load_graph(Path(graph_path))
     results = []
     for case in routes:
         try:
