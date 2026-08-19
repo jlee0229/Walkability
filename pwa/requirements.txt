@@ -1,0 +1,9 @@
+# Runtime deps for the Humanpath PWA backend (pwa/server.py) ONLY.
+# The CSR routing path needs just numpy + networkx (versions pinned to match
+# the main requirements.txt); no streamlit/folium/osmnx/geopandas — that keeps
+# the Docker image small and cold starts fast.
+fastapi==0.141.1
+uvicorn[standard]==0.49.0
+numpy==2.4.6
+networkx==3.6.1
+requests==2.34.2

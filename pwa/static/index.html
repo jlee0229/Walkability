@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Humanpath</title>
+  <meta name="description" content="Walking routes scored block by block — street type, surface, safety. Choose how far you'll go for a better walk." />
+  <meta name="theme-color" content="#f0ebe0" />
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Humanpath" />
+
+  <!-- Fonts (same faces as the desktop app; real fallback stacks in CSS) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;1,400&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Vendored map libs — shared with the Streamlit component (served at /vendor) -->
+  <link href="/vendor/maplibre-gl.css" rel="stylesheet" />
+  <link href="./style.css" rel="stylesheet" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Floating search panel -->
+  <header class="topbar" id="topbar">
+    <div class="brand-row">
+      <svg width="26" height="26" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M33 67 C 60 56, 40 44, 67 33" fill="none" stroke="#211e18" stroke-width="13" stroke-linecap="round"/>
+        <circle cx="27" cy="73" r="15" fill="#b1592e"/>
+        <circle cx="73" cy="27" r="15" fill="#b1592e"/>
+      </svg>
+      <span class="brand">Humanpath</span>
+      <span class="brand-sub" id="areaLabel">Boston metro</span>
+      <button id="installBtn" class="install-chip" hidden>Install</button>
+    </div>
+
+    <div class="fields">
+      <div class="field">
+        <span class="dot dot-origin" aria-hidden="true"></span>
+        <input id="fromInput" placeholder="From" autocomplete="off" enterkeyhint="search" />
+        <button id="locBtn" class="icon-btn" title="Use my location" aria-label="Use my location">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+          </svg>
+        </button>
+      </div>
+      <div class="field">
+        <span class="dot dot-dest" aria-hidden="true"></span>
+        <input id="toInput" placeholder="To" autocomplete="off" enterkeyhint="search" />
+        <button id="swapBtn" class="icon-btn" title="Swap" aria-label="Swap origin and destination">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 4v13M7 17l-3-3M7 17l3-3M17 20V7M17 7l-3 3M17 7l3 3"/>
+          </svg>
+        </button>
+      </div>
+      <div class="hint" id="hint"></div>
+    </div>
+
+    <div class="walkrow">
+      <div class="walkrow-labels">
+        <span>Shortest way</span>
+        <span id="alphaWord" class="alpha-word">Balanced</span>
+        <span>Best walk</span>
+      </div>
+      <input type="range" id="alphaSlider" min="0" max="100" value="40" aria-label="How you'll walk" />
+    </div>
+
+    <button id="goBtn" class="go-btn">Find routes</button>
+  </header>
+
+  <!-- Collapsed trip pill (after a search) -->
+  <button class="trip-pill" id="tripPill" hidden>
+    <span class="pill-route" id="pillText"></span>
+    <span class="pill-edit">Edit</span>
+  </button>
+
+  <!-- Bottom sheet: route cards -->
+  <section class="sheet" id="sheet" hidden>
+    <div class="cards" id="cards"></div>
+    <div class="detail" id="detail" hidden></div>
+    <div class="legend" id="legend">
+      <span class="legend-title">Walk score</span>
+      <span><i style="background:#3f8f5f"></i>80+</span>
+      <span><i style="background:#789b3e"></i>65</span>
+      <span><i style="background:#c8922f"></i>50</span>
+      <span><i style="background:#c0512f"></i>&lt;50</span>
+    </div>
+  </section>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script>
+    // Hidden-tab rAF fallback: some embedded webviews/preview panes report the
+    // document as hidden, where requestAnimationFrame never fires and MapLibre
+    // stalls before its first style load. While hidden, race rAF against a
+    // 50 ms timer (single-fire). No-op in a normally visible tab.
+    (function () {
+      var raf = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = function (cb) {
+        if (!document.hidden) return raf(cb);
+        var fired = false;
+        function fire(ts) { if (!fired) { fired = true; cb(ts); } }
+        raf(fire);
+        setTimeout(function () { fire(performance.now()); }, 50);
+        return 0;
+      };
+    })();
+  </script>
+  <script src="/vendor/maplibre-gl.js"></script>
+  <script src="/vendor/pmtiles.js"></script>
+  <script src="/vendor/basemaps.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

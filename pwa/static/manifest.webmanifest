@@ -1,0 +1,16 @@
+{
+  "name": "Humanpath — walk-quality routes",
+  "short_name": "Humanpath",
+  "description": "Walking routes scored block by block on street type, surface, and safety. Choose how far you'll go for a better walk.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f0ebe0",
+  "theme_color": "#f0ebe0",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
