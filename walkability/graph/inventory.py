@@ -248,6 +248,16 @@ class CityProfile:
     # traffic from making a hostile fast arterial read as safe (Austin stroads).
     eyes_rescue_cap: float | None = None
 
+    # --- OSM download filter ---
+    # osmnx Overpass filter passed to graph_from_place. None → the stock
+    # network_type="walk" filter. A city whose pedestrian network runs largely on
+    # SHARED-USE paths tagged highway=cycleway (Austin's Butler Hike-and-Bike
+    # Trail + the Lady Bird Lake bridge decks) needs a custom filter that KEEPS
+    # cycleways — the stock walk filter drops them, severing every central lake
+    # crossing and forcing routes ~1.3 km west to MoPac. Still excludes motor
+    # roads / foot=no / private, so it stays a pedestrian graph.
+    custom_filter: str | None = None
+
     # --- validation ---
     required_fields: tuple[str, ...] = field(default_factory=tuple)
 
@@ -350,6 +360,18 @@ AUSTIN_PROFILE = CityProfile(
     divergence_threshold=0.15,  # keep the same normalised sensitivity as Boston
     maxspeed_defaults=_AUSTIN_MAXSPEED_DEFAULTS,  # faster arterials than Boston
     eyes_rescue_cap=0.15,  # strip-mall foot traffic can't make a stroad feel safe
+    # Keep highway=cycleway: Austin's Butler Hike-and-Bike Trail + the Lady Bird
+    # Lake pedestrian-bridge decks are tagged cycleway (foot unset), and the stock
+    # walk filter drops them — severing every central lake crossing (verified:
+    # Capitol→Zilker routed 10.5 km via MoPac instead of ~2.6 km). Still excludes
+    # motor roads / foot=no / private / non-pedestrian ways, so it stays a walking
+    # graph. Mirrors osmnx's walk filter with `cycleway` removed from the exclusion.
+    custom_filter=(
+        '["highway"]["area"!~"yes"]'
+        '["highway"!~"abandoned|bus_guideway|construction|motor|no|planned|'
+        'platform|proposed|raceway|razed"]'
+        '["foot"!~"no"]["service"!~"private"]["access"!~"private|no"]'
+    ),
     required_fields=("rating_no_veg", "functional_condition", "pedestrian_facility_type"),
 )
 

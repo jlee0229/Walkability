@@ -24,7 +24,14 @@ ox.settings.use_cache = True
 
 def download_walk_graph(profile: CityProfile) -> None:
     print(f"[{profile.name}] Downloading walk graph for: {', '.join(profile.places)}")
-    G = ox.graph_from_place(profile.places, network_type="walk")
+    if profile.custom_filter is not None:
+        # City-specific pedestrian filter (e.g. Austin keeps highway=cycleway for
+        # its shared-use trail network + lake-bridge decks); network_type is
+        # ignored when a custom_filter is given.
+        print("  using custom pedestrian filter (keeps shared-use cycleways)")
+        G = ox.graph_from_place(profile.places, custom_filter=profile.custom_filter)
+    else:
+        G = ox.graph_from_place(profile.places, network_type="walk")
     ox.save_graphml(G, profile.graph_path)
     print(f"  Nodes: {len(G.nodes)}, Edges: {len(G.edges)}")
     print(f"  Saved → {profile.graph_path}")
