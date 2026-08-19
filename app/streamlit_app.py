@@ -38,6 +38,8 @@ from walkability.graph.build import (
     load_graph,
 )
 from walkability.graph.compact import load_runtime, runtime_path
+from walkability.graph.csr import RoutingGraph, csr_path, load_csr
+from walkability.graph.inventory import CITY_PROFILES
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
@@ -236,34 +238,78 @@ def _download_release_asset(p: Path) -> bool:
     return True
 
 
-@st.cache_resource(show_spinner="Loading the walk graph (one-time)…")
-def get_graph(path_str: str):
-    """Load the slim runtime pickle (≈0.5 s, ≈0.45 GB) for an enriched GraphML path.
+def _prewarm(G):
+    """Build the snap/routing caches now (during the load spinner) so the user's
+    *first* search isn't ~0.7–1.2 s slower than the rest.
 
-    Prefers the ``.runtime.pkl`` sibling everywhere: locally it already exists,
-    and on a fresh deploy it is downloaded from the GitHub Release (40 MB vs the
-    178 MB GraphML). Falls back to the full GraphML only if the pickle is absent
-    both locally and in the release (e.g. an old release without the asset).
+    These caches — the largest-walkable-component mask and the per-node
+    walk-quality array (plus, on the Nx path, the coordinate cache) — are memoised
+    on the graph and otherwise built lazily on the first ``find_routes`` snap.
+    Best-effort: warming must never block loading, so failures are swallowed."""
+    try:
+        if isinstance(G, RoutingGraph):
+            from walkability.routing import csr_router
+            csr_router._routable_mask(G)
+            csr_router._node_quality(G)
+        else:
+            from walkability.routing import clip
+            clip._node_coords(G)
+            clip._routable_mask(G)
+            clip._node_walk_quality(G)
+    except Exception:
+        pass
+
+
+@st.cache_resource(max_entries=1, show_spinner="Loading the walk graph (one-time)…")
+def get_graph(path_str: str):
+    """Load the walk graph for an enriched GraphML path, smallest-first.
+
+    Fallback ladder: the Phase-2 compact **CSR** pickle (``*.csr.pkl`` — ~32–60 MB,
+    <0.1 s, ~80 MB RAM) → the Phase-1 runtime ``MultiDiGraph`` pickle
+    (``*.runtime.pkl``) → the heavyweight GraphML. Each tier is tried locally, then
+    downloaded from the GitHub Release. Routing/rendering handle either the CSR
+    RoutingGraph or a MultiDiGraph transparently (see the ``_edge_*`` helpers and
+    ``router.find_routes``'s isinstance dispatch).
+
+    ``max_entries=1`` keeps **only one graph resident** — switching city/area
+    evicts the previous graph rather than stacking both in RAM (a second city like
+    Austin alone approaches the host cap; see the deploy-memory note). The load is
+    pre-warmed (:func:`_prewarm`) so the first search is as snappy as the rest.
     """
     graphml = Path(path_str)
+    cp = csr_path(graphml)
     rt = runtime_path(graphml)
 
-    if rt.exists():
-        return load_runtime(rt)
-
-    # Not local → fetch the runtime pickle from the release (preferred, small).
-    with st.spinner(f"Downloading map data ({rt.name}) — first run only…"):
-        if _download_release_asset(rt):
+    def _load():
+        if cp.exists():
+            return load_csr(cp)
+        if rt.exists():
             return load_runtime(rt)
+        # Not local → fetch the compact CSR from the release first (smallest).
+        with st.spinner(f"Downloading map data ({cp.name}) — first run only…"):
+            if _download_release_asset(cp):
+                return load_csr(cp)
+        with st.spinner(f"Downloading map data ({rt.name}) — first run only…"):
+            if _download_release_asset(rt):
+                return load_runtime(rt)
+        # Last resort: the heavyweight GraphML (older release without a pickle).
+        if not graphml.exists():
+            with st.spinner(f"Downloading map data ({graphml.name}) — first run only…"):
+                _download_release_asset(graphml)
+        return load_graph(graphml)
 
-    # Last resort: the heavyweight GraphML (older release without the pickle).
-    if not graphml.exists():
-        with st.spinner(f"Downloading map data ({graphml.name}) — first run only…"):
-            _download_release_asset(graphml)
-    return load_graph(graphml)
+    G = _load()
+    _prewarm(G)
+    return G
 
 
 def _graph_center(G):
+    if isinstance(G, RoutingGraph):
+        c = getattr(G, "_center", None)
+        if c is None:
+            c = (float(G.node_y.mean()), float(G.node_x.mean()))
+            G._center = c
+        return c
     cached = G.graph.get("_center")
     if cached is None:
         ys = [d["y"] for _, d in G.nodes(data=True)]
@@ -273,13 +319,43 @@ def _graph_center(G):
     return cached
 
 
-def _edge_coords(G, u, v, key):
+# --- Graph-type-agnostic edge/node accessors -------------------------------
+# Routes carry (u, v, key) tuples; on the CSR RoutingGraph they also carry the
+# aligned edge index (RouteResult.edge_indices), which is how geometry/fields are
+# fetched there. These helpers hide the MultiDiGraph-vs-RoutingGraph split so the
+# rendering code reads the same on both.
+
+def _route_edge_idx(r):
+    """Per-hop CSR edge index aligned with ``r.edges`` (None-filled on the Nx path)."""
+    return r.edge_indices if r.edge_indices else [None] * len(r.edges)
+
+
+def _node_yx(G, n):
+    if isinstance(G, RoutingGraph):
+        i = G.id_to_idx[n]
+        return (float(G.node_y[i]), float(G.node_x[i]))
+    nd = G.nodes[n]
+    return (nd["y"], nd["x"])
+
+
+def _edge_data(G, u, v, key, eidx=None):
+    """Edge-attribute view (``.get``/``.items``) for one hop, either substrate."""
+    return G.edge_view(eidx) if isinstance(G, RoutingGraph) else G[u][v][key]
+
+
+def _edge_coords(G, u, v, key, eidx=None):
+    """Edge polyline as folium (lat, lon) points, either substrate.
+
+    Geometry is a float32 (n, 2) (lon, lat) array on the CSR/runtime path and a
+    shapely LineString on the enriched GraphML; both iterate as (lon, lat) and are
+    flipped here. Falls back to the two node endpoints when geometry is absent."""
+    if isinstance(G, RoutingGraph):
+        geom = G.edge_geometry(eidx)
+        if geom is not None:
+            return [(float(lat), float(lon)) for lon, lat in geom]
+        return [_node_yx(G, u), _node_yx(G, v)]
     geom = G[u][v][key].get("geometry")
     if geom is not None:
-        # Runtime pickle packs geometry as a float32 (n, 2) ndarray (lon, lat);
-        # the enriched GraphML carries a shapely LineString. Both iterate as
-        # (lon, lat) pairs, flipped here to folium's (lat, lon).
-        # float(...) so packed float32 becomes plain float (folium/JSON-safe).
         coords = geom if isinstance(geom, np.ndarray) else geom.coords
         return [(float(lat), float(lon)) for lon, lat in coords]
     return [(G.nodes[u]["y"], G.nodes[u]["x"]), (G.nodes[v]["y"], G.nodes[v]["x"])]
@@ -292,48 +368,96 @@ def _edge_coords(G, u, v, key):
 # Photon primary + a timed Nominatim fallback fixes that; every call has a hard
 # timeout so geocoding can never spin forever (worst case → "couldn't find address").
 _PHOTON_URL = "https://photon.komoot.io/api"
-# Coverage box = the config.PLACES metro hull (Boston + Brookline + Cambridge /
-# Somerville / Everett / Chelsea), matching the graph extent and the PMTiles cut —
-# keep the three in sync when PLACES widens. Photon's `bbox` HARD-FILTERS results,
-# which is what lets a bare name ("Harvard Square", "Assembly Row") resolve to the
-# local one without appending a town to the query.
-_METRO_BBOX = (-71.21, 42.21, -70.94, 42.44)   # lon_min, lat_min, lon_max, lat_max
-_PHOTON_BIAS = {"lat": 42.36, "lon": -71.08,
-                "bbox": ",".join(str(v) for v in _METRO_BBOX)}
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-# Nominatim viewbox order is left,top,right,bottom.
-_METRO_VIEWBOX = f"{_METRO_BBOX[0]},{_METRO_BBOX[3]},{_METRO_BBOX[2]},{_METRO_BBOX[1]}"
 _GEO_HEADERS = {"User-Agent": "walkability-route-app/0.1 (educational project)"}
 
+# ---------------------------------------------------------------------------
+# Map areas — the city/area selector
+# ---------------------------------------------------------------------------
+# Each area = a walk graph + its geocoding box/bias + basemap style + a coverage
+# blurb. The geocoding bbox HARD-FILTERS Photon results, which is what lets a bare
+# name ("Harvard Square", "Barton Springs") resolve to the local one without
+# appending a town. Boston ships a brand-tinted self-hosted PMTiles cut; other
+# cities fall back to the global OpenFreeMap positron style (functional
+# everywhere — a per-city PMTiles cut can be added later via the CLAUDE.md
+# recipe). Keep each area's bbox in sync with its graph extent. Only ONE area's
+# graph is resident at a time (get_graph `max_entries=1`).
+_BOSTON_GEO = {
+    "bbox": (-71.21, 42.21, -70.94, 42.44),   # lon_min, lat_min, lon_max, lat_max
+    "bias": (42.36, -71.08),                  # lat, lon
+    "covered": "Boston, Brookline, Cambridge, Somerville, Everett, or Chelsea",
+    "style": "pmtiles-boston",
+    "from": "Massachusetts State House",      # default trip endpoints for this area
+    "to": "Boston Public Garden",
+}
+_AUSTIN_GEO = {
+    "bbox": (-97.98, 30.08, -97.55, 30.55),
+    "bias": (30.27, -97.74),
+    "covered": "Austin, TX",
+    "style": "openfreemap",
+    "from": "Texas State Capitol",
+    "to": "Zilker Park",
+}
+# `city=True` areas are the first-class options in the rail selector; the Boston
+# `DEV_REGIONS` test beds stay resolvable (a set region_select value still loads
+# them) but are hidden from the promoted selector.
+_AREAS: dict[str, dict] = {
+    "full":   {"label": "Boston metro", "graph": str(ENRICHED_PATH), "city": True, **_BOSTON_GEO},
+    "austin": {"label": "Austin, TX",   "graph": str(CITY_PROFILES["austin"].enriched_path), "city": True, **_AUSTIN_GEO},
+}
+for _r in DEV_REGIONS:
+    _AREAS[_r] = {"label": _r.replace("_", " ").title(), "graph": str(dev_region_path(_r)), **_BOSTON_GEO}
+_CITY_AREAS = [k for k, a in _AREAS.items() if a.get("city")]
+_DEFAULT_AREA = "full"
 
-def in_coverage(latlon) -> bool:
-    """True if a geocoded (lat, lon) falls inside the covered metro extent."""
+
+def in_coverage(latlon, bbox) -> bool:
+    """True if a geocoded (lat, lon) falls inside the active area's extent."""
     lat, lon = latlon
-    lon_min, lat_min, lon_max, lat_max = _METRO_BBOX
+    lon_min, lat_min, lon_max, lat_max = bbox
     return lon_min <= lon <= lon_max and lat_min <= lat <= lat_max
 
 
+def _photon_label(props: dict) -> str | None:
+    """A human "what got matched" string from a Photon feature — the POI/place
+    name plus a street/city hint (so "Austin Capital" reads as the mortgage office
+    it actually resolved to, not silently)."""
+    name = props.get("name")
+    detail = ", ".join(p for p in (props.get("street"), props.get("city")) if p)
+    if name and detail:
+        return f"{name} · {detail}"
+    return name or detail or None
+
+
 @st.cache_data(show_spinner=False)
-def _geocode_query(q: str):
-    """(lat, lon) for a query; raises on total failure (so failures aren't cached)."""
+def _geocode_query(q: str, bbox: tuple, bias: tuple):
+    """(lat, lon, label) for a query within an area's box; raises on total failure
+    (so failures aren't cached). ``label`` is the matched place, shown to the user.
+    ``bbox``/``bias`` are part of the cache key so the same address resolves
+    per-area (e.g. a "Main St" in Boston vs Austin)."""
     import requests
 
+    bias_lat, bias_lon = bias
+    photon_bias = {"lat": bias_lat, "lon": bias_lon,
+                   "bbox": ",".join(str(v) for v in bbox)}
     # Primary: Photon (komoot). GeoJSON features; coords are [lon, lat].
     try:
-        resp = requests.get(_PHOTON_URL, params={"q": q, "limit": 1, **_PHOTON_BIAS},
+        resp = requests.get(_PHOTON_URL, params={"q": q, "limit": 1, **photon_bias},
                             headers=_GEO_HEADERS, timeout=8)
         resp.raise_for_status()
         feats = resp.json().get("features") or []
         if feats:
             lon, lat = feats[0]["geometry"]["coordinates"][:2]
-            return (float(lat), float(lon))
+            return (float(lat), float(lon), _photon_label(feats[0].get("properties", {})))
     except Exception:
         pass
 
-    # Fallback: Nominatim (bounded to the metro box, then unbounded), each call
+    # Fallback: Nominatim (bounded to the area box, then unbounded), each call
     # timed. An unbounded hit outside the box is caught by in_coverage at the
     # call site (clear "outside the covered area" error, not a bad snap).
-    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": _METRO_VIEWBOX}
+    # Nominatim viewbox order is left,top,right,bottom.
+    viewbox = f"{bbox[0]},{bbox[3]},{bbox[2]},{bbox[1]}"
+    base = {"q": q, "format": "json", "limit": 1, "countrycodes": "us", "viewbox": viewbox}
     for bounded in (1, 0):
         try:
             resp = requests.get(_NOMINATIM_URL, params={**base, "bounded": bounded},
@@ -341,22 +465,35 @@ def _geocode_query(q: str):
             resp.raise_for_status()
             data = resp.json()
             if data:
-                return (float(data[0]["lat"]), float(data[0]["lon"]))
+                label = ", ".join((data[0].get("display_name") or "").split(",")[:2]).strip()
+                return (float(data[0]["lat"]), float(data[0]["lon"]), label or None)
         except Exception:
             continue
     raise ValueError(f"no geocoding result for {q!r}")
 
 
-def geocode(query: str):
-    """(lat, lon) for an address, or None. No town is appended to the query —
-    that used to force ", Boston" onto bare names, which made every address in
-    the hull towns (Cambridge/Somerville/Everett/Chelsea/Brookline) ungeocodable.
-    Photon's metro bbox filter does the disambiguation instead."""
+def geocode(query: str, geo: dict):
+    """(lat, lon) for an address within the active area, or None. No town is
+    appended to the query — the area's Photon bbox filter does the disambiguation
+    (an old ", Boston" append made hull-town addresses ungeocodable)."""
     q = query.strip()
     if not q:
         return None
     try:
-        return _geocode_query(q)
+        r = _geocode_query(q, geo["bbox"], geo["bias"])
+        return (r[0], r[1])
+    except Exception:
+        return None
+
+
+def geocode_label(query: str, geo: dict):
+    """The matched-place label for an address (for the "→ …" caption under each
+    box), or None. Same cached call as :func:`geocode`, so no extra request."""
+    q = query.strip()
+    if not q:
+        return None
+    try:
+        return _geocode_query(q, geo["bbox"], geo["bias"])[2]
     except Exception:
         return None
 
@@ -402,8 +539,8 @@ def route_details(G, route, weights):
     worst_walk, worst_dist = 1.0, 0.0
     cum = 0.0
     street_len: dict[str, float] = defaultdict(float)
-    for u, v, key in route.edges:
-        d = G[u][v][key]
+    for (u, v, key), e in zip(route.edges, _route_edge_idx(route)):
+        d = _edge_data(G, u, v, key, e)
         length = float(d.get("length") or 0.0)
         w, _ = edge_walkability(d, weights)
         if w < worst_walk:
@@ -448,6 +585,11 @@ st.session_state.setdefault("active_weights", FACTOR_WEIGHTS)  # weights the sho
 st.session_state.setdefault("region", None)
 st.session_state.setdefault("error", None)
 st.session_state.setdefault("recenter_nonce", 0)  # bumped by the "Fit route" button
+# Trip endpoints default to the initially-selected area's landmarks; reset to the
+# new area's on a city switch (see the rail selector below).
+_init_area = _AREAS.get(st.session_state.get("region_select", _DEFAULT_AREA), _AREAS[_DEFAULT_AREA])
+st.session_state.setdefault("from_addr", _init_area["from"])
+st.session_state.setdefault("to_addr", _init_area["to"])
 
 inject_css()
 
@@ -472,11 +614,39 @@ with st.sidebar:
     )
     st.markdown('<div class="fp-hair"></div>', unsafe_allow_html=True)
 
+    # Promoted city selector (cities only — the DEV_REGIONS test beds are hidden).
+    # Resolved here, above the Trip inputs, so a city switch can reset the trip
+    # endpoints to the new city's landmarks BEFORE those widgets render.
+    st.markdown('<div class="fp-mono">City</div>', unsafe_allow_html=True)
+    # A stale value (e.g. a hidden dev region from an older session) isn't a valid
+    # option in the cities-only selector — reset it so the widget can't error.
+    if "region_select" in st.session_state and st.session_state.region_select not in _CITY_AREAS:
+        st.session_state.region_select = _DEFAULT_AREA
+    st.selectbox("City", _CITY_AREAS, format_func=lambda k: _AREAS[k]["label"],
+                 label_visibility="collapsed", key="region_select")
+    region = st.session_state.get("region_select", _DEFAULT_AREA)
+    area = _AREAS.get(region, _AREAS[_DEFAULT_AREA])
+    graph_path = area["graph"]
+    if st.session_state.region != region:
+        st.session_state.region = region
+        st.session_state.from_addr = area["from"]   # reset endpoints to the new city
+        st.session_state.to_addr = area["to"]
+        st.session_state.routes = []
+        st.session_state.committed = None
+        st.session_state.error = None
+
+    st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
     st.markdown('<div class="fp-mono">Trip</div>', unsafe_allow_html=True)
-    o_addr = st.text_input("From", value="Massachusetts State House", label_visibility="collapsed",
-                           placeholder="From — e.g. Massachusetts State House")
-    d_addr = st.text_input("To", value="Boston Public Garden", label_visibility="collapsed",
-                           placeholder="To — e.g. Boston Public Garden")
+    o_addr = st.text_input("From", key="from_addr", label_visibility="collapsed",
+                           placeholder=f"From — e.g. {area['from']}")
+    _o_label = geocode_label(o_addr, area)
+    if _o_label:
+        st.caption(f"→ {_o_label}")
+    d_addr = st.text_input("To", key="to_addr", label_visibility="collapsed",
+                           placeholder=f"To — e.g. {area['to']}")
+    _d_label = geocode_label(d_addr, area)
+    if _d_label:
+        st.caption(f"→ {_d_label}")
 
     st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 1])
@@ -523,16 +693,8 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-# Region selector lives at the bottom of the rail (rendered later); read its
-# committed value here via the widget key so the graph can load first.
-region = st.session_state.get("region_select", "full")
-graph_path = str(ENRICHED_PATH if region == "full" else dev_region_path(region))
-if st.session_state.region != region:
-    st.session_state.region = region
-    st.session_state.routes = []
-    st.session_state.committed = None
-    st.session_state.error = None
-
+# `region`/`area`/`graph_path` are resolved in the rail (with the promoted city
+# selector, above the Trip inputs). Load the graph for the selected city.
 G = get_graph(graph_path)
 
 
@@ -542,21 +704,22 @@ G = get_graph(graph_path)
 
 if find:
     st.session_state.error = None
-    _covered = "Boston, Brookline, Cambridge, Somerville, Everett, or Chelsea"
+    _covered = area["covered"]
+    _bbox = area["bbox"]
     with st.spinner("Reading the streets…"):
-        o = geocode(o_addr)
-        d = geocode(d_addr)
+        o = geocode(o_addr, area)
+        d = geocode(d_addr, area)
         ok = (o is not None and d is not None
-              and in_coverage(o) and in_coverage(d))
+              and in_coverage(o, _bbox) and in_coverage(d, _bbox))
         routes_found = find_routes(G, o, d, alpha=alpha, weights=weights) if ok else None
     if o is None:
         st.session_state.error = f"Couldn't find “{o_addr}”. Try a more specific address."
     elif d is None:
         st.session_state.error = f"Couldn't find “{d_addr}”. Try a more specific address."
-    elif not in_coverage(o):
+    elif not in_coverage(o, _bbox):
         st.session_state.error = (f"“{o_addr}” looks outside the covered area. "
                                   f"Humanpath currently covers {_covered}.")
-    elif not in_coverage(d):
+    elif not in_coverage(d, _bbox):
         st.session_state.error = (f"“{d_addr}” looks outside the covered area. "
                                   f"Humanpath currently covers {_covered}.")
     else:
@@ -650,8 +813,8 @@ with st.sidebar:
                           key=f"segbtn_{i}", on_click=_toggle, args=(seg_key,))
                 if seg_open:
                     rows = []
-                    for j, (u, v, ekey) in enumerate(r.edges):
-                        d = G[u][v][ekey]
+                    for j, ((u, v, ekey), e) in enumerate(zip(r.edges, _route_edge_idx(r))):
+                        d = _edge_data(G, u, v, ekey, e)
                         w, _ = edge_walkability(d, rweights)
                         hwy = _as_str(d.get("highway")) or "path"
                         length = _as_float(d.get("length")) or 0.0
@@ -667,15 +830,7 @@ with st.sidebar:
                     )
 
 
-# Region selector — tucked at the very bottom of the rail (will grow once we add
-# more areas). Its value is read at the top of the next run via the widget key.
-with st.sidebar:
-    st.markdown('<div class="fp-hair" style="margin:24px 0 8px;"></div>', unsafe_allow_html=True)
-    with st.expander("Map area"):
-        _region_labels = {"full": "Full Boston"}
-        _region_labels.update({r: r.replace("_", " ").title() for r in DEV_REGIONS})
-        st.selectbox("Area", list(_region_labels), format_func=_region_labels.get,
-                     label_visibility="collapsed", key="region_select")
+# (The city selector was promoted to the top of the rail, above the Trip inputs.)
 
 
 # ---------------------------------------------------------------------------
@@ -758,22 +913,23 @@ def build_route_layer(G, routes, focus, weights, segmented):
     for i in order:
         r = routes[i]
         if i != focus:
-            coords = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in r.nodes]
+            coords = [_node_yx(G, n) for n in r.nodes]
             folium.PolyLine(coords, color=score_hex(r.walk_score), weight=4,
                             opacity=0.4, line_cap="round").add_to(fg)
         else:
             full = []
-            for u, v, key in r.edges:
-                full += _edge_coords(G, u, v, key)
+            for (u, v, key), e in zip(r.edges, _route_edge_idx(r)):
+                full += _edge_coords(G, u, v, key, e)
             folium.PolyLine(full, color="#faf8f2", weight=10, opacity=1,
                             line_cap="round", line_join="round").add_to(fg)  # halo
             if segmented:
-                for u, v, key in r.edges:
-                    cs = _edge_coords(G, u, v, key)
-                    w, _ = edge_walkability(G[u][v][key], weights)
+                for (u, v, key), e in zip(r.edges, _route_edge_idx(r)):
+                    cs = _edge_coords(G, u, v, key, e)
+                    d = _edge_data(G, u, v, key, e)
+                    w, _ = edge_walkability(d, weights)
                     folium.PolyLine(
                         cs, color=score_hex(w), weight=6, opacity=1, line_cap="round",
-                        tooltip=f"walk {round(w*100)}/100 · {_as_str(G[u][v][key].get('highway')) or 'path'}",
+                        tooltip=f"walk {round(w*100)}/100 · {_as_str(d.get('highway')) or 'path'}",
                     ).add_to(fg)
             else:
                 folium.PolyLine(
@@ -783,8 +939,8 @@ def build_route_layer(G, routes, focus, weights, segmented):
                 ).add_to(fg)
 
     focal = routes[focus]
-    o = (G.nodes[focal.nodes[0]]["y"], G.nodes[focal.nodes[0]]["x"])
-    d = (G.nodes[focal.nodes[-1]]["y"], G.nodes[focal.nodes[-1]]["x"])
+    o = _node_yx(G, focal.nodes[0])
+    d = _node_yx(G, focal.nodes[-1])
     folium.CircleMarker(o, radius=7, color="#faf8f2", weight=3, fill_color=ACCENT,
                         fill_opacity=1, tooltip="Start").add_to(fg)
     folium.CircleMarker(d, radius=7, color="#faf8f2", weight=3, fill_color=INK,
@@ -804,8 +960,9 @@ def camera_view(G, routes, focus):
     if not routes:
         return _graph_center(G), _BASE_ZOOM
     fpts = []
-    for u, v, key in routes[focus].edges:
-        fpts += _edge_coords(G, u, v, key)
+    fr = routes[focus]
+    for (u, v, key), e in zip(fr.edges, _route_edge_idx(fr)):
+        fpts += _edge_coords(G, u, v, key, e)
     if not fpts:
         return _graph_center(G), _BASE_ZOOM
     lats = [p[0] for p in fpts]
@@ -822,7 +979,10 @@ def camera_view(G, routes, focus):
 # main.js keeps a PERSISTENT map and updates layers/camera per rerun (no remount).
 # Basemap: OpenFreeMap for now (HUMANPATH_STYLE to switch); production = self-hosted
 # Protomaps PMTiles (B2.1b). MapLibre is CDN-loaded for now; vendor for production.
-_HUMANPATH_STYLE = _cfg("HUMANPATH_STYLE", "pmtiles-boston").strip().lower()
+# Empty by default → each area picks its own basemap (Boston = self-hosted PMTiles,
+# other cities = global OpenFreeMap). Set HUMANPATH_STYLE to force one style
+# globally (e.g. "openfreemap", "pmtiles-demo") for testing.
+_HUMANPATH_STYLE = _cfg("HUMANPATH_STYLE", "").strip().lower()
 
 # B2.1b PMTiles validation: a public, CORS-open (access-control-allow-origin: *),
 # range-request-enabled Protomaps demo file (Florence). Proves the pmtiles://
@@ -864,12 +1024,20 @@ _PMTILES_BOSTON_URL = _cfg(
     "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston_metro.pmtiles").strip()
 _PMTILES_BOSTON_STYLE = {"_protomaps": {"url": "pmtiles://" + _PMTILES_BOSTON_URL, "flavor": "light"}}
 
-_MAPLIBRE_BASEMAP = {
+_OPENFREEMAP_POSITRON = "https://tiles.openfreemap.org/styles/positron"
+_MAPLIBRE_STYLES = {
     "demotiles": "https://demotiles.maplibre.org/style.json",
-    "openfreemap": "https://tiles.openfreemap.org/styles/positron",
+    "openfreemap": _OPENFREEMAP_POSITRON,
     "pmtiles-demo": _PMTILES_DEMO_STYLE,
     "pmtiles-boston": _PMTILES_BOSTON_STYLE,
-}.get(_HUMANPATH_STYLE, "https://tiles.openfreemap.org/styles/positron")
+}
+
+
+def _resolve_basemap(area: dict):
+    """Basemap style for the active area — a global HUMANPATH_STYLE override wins,
+    else the area's own style (Boston = brand PMTiles, others = OpenFreeMap)."""
+    name = _HUMANPATH_STYLE or area.get("style", "openfreemap")
+    return _MAPLIBRE_STYLES.get(name, _OPENFREEMAP_POSITRON)
 
 _MAPLIBRE_COMPONENT = components.declare_component(
     "humanpath_maplibre",
@@ -884,8 +1052,8 @@ def _route_lonlat(G, r):
     edge's last coord — dropping the duplicate keeps the LineString clean (coincident
     vertices confuse GL simplification/clipping and are pure bloat)."""
     coords = []
-    for u, v, key in r.edges:
-        for lat, lon in _edge_coords(G, u, v, key):
+    for (u, v, key), e in zip(r.edges, _route_edge_idx(r)):
+        for lat, lon in _edge_coords(G, u, v, key, e):
             pt = [lon, lat]
             if not coords or coords[-1] != pt:
                 coords.append(pt)
@@ -928,10 +1096,11 @@ def _route_geojson(G, routes, focus, weights, segmented):
     joints = []  # block-boundary dots (segmented mode) so adjacent blocks read apart
     if segmented:
         seg_coords = []
-        for u, v, key in focal.edges:
-            w, _ = edge_walkability(G[u][v][key], weights)
-            hwy = _as_str(G[u][v][key].get("highway")) or "path"
-            cs = [[lon, lat] for lat, lon in _edge_coords(G, u, v, key)]
+        for (u, v, key), e in zip(focal.edges, _route_edge_idx(focal)):
+            d = _edge_data(G, u, v, key, e)
+            w, _ = edge_walkability(d, weights)
+            hwy = _as_str(d.get("highway")) or "path"
+            cs = [[lon, lat] for lat, lon in _edge_coords(G, u, v, key, e)]
             seg_coords.append(cs)
             feats.append(_line_feature(cs, {
                 "role": "segment", "color": score_hex(w),
@@ -1010,16 +1179,20 @@ if _use_maplibre:
     else:
         _gc = _graph_center(G)
         _init_center, _init_zoom = [_gc[1], _gc[0]], _BASE_ZOOM
+    # Switching city/area changes both the basemap and the centre; the component's
+    # centre is only applied on creation, so key the component by area — a switch
+    # remounts it fresh onto the new city (mirrors the folium region-switch remount),
+    # while staying persistent within an area.
     _ml_val = _MAPLIBRE_COMPONENT(
         geojson=_gj,
         points=_points,
         camera={"bounds": _bounds, "token": _cam_token, "animate": True},
-        style=_MAPLIBRE_BASEMAP,
+        style=_resolve_basemap(area),
         center=_init_center,
         zoom=_init_zoom,
         forceFail=_MAP_FORCE_FAIL,
         height=660,
-        key="maplibre_map",
+        key=f"maplibre_map_{region}",
         default=None,
     )
     if isinstance(_ml_val, dict) and _ml_val.get("status") == "error":

@@ -115,6 +115,10 @@ class RouteResult:
     walk_score:    float
     confidence:    float
     crossing_count: int = 0         # highway=crossing nodes traversed (excl. origin)
+    # CSR runtime only: the RoutingGraph edge index per hop (aligned with `edges`).
+    # Lets the app fetch geometry/fields by index and the CSR refiner mask r1's
+    # edges. Empty on the NetworkX path (which addresses edges by (u, v, key)).
+    edge_indices:  list[int] = field(default_factory=list)
     # Floored route-level per-dimension values (safety/comfort/path) that walk_score
     # combines — the two-level aggregate's intermediate, exposed for the survey and
     # diagnostics so the displayed bars match the score exactly.
@@ -519,6 +523,19 @@ def find_routes(
     list[RouteResult] :
         Best route first. Empty if origin and destination are disconnected.
     """
+    # A compact CSR RoutingGraph routes through the parallel CSR implementation
+    # (custom A* over integer node indices). Lazy import avoids an import cycle
+    # (csr_router reuses the pure helpers/constants defined here). The NetworkX
+    # MultiDiGraph path below is unchanged.
+    if not isinstance(G, nx.MultiDiGraph):
+        from walkability.routing import csr_router
+        return csr_router.find_routes(
+            G, orig, dest, alpha=alpha, weights=weights, refine_sides=refine_sides,
+            k=k, max_candidates=max_candidates, min_confidence=min_confidence,
+            tie_epsilon=tie_epsilon, conf_beta=conf_beta,
+            detour_factor=detour_factor, min_buffer_m=min_buffer_m,
+        )
+
     o_node = clip.snap_to_node(G, *orig, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
     d_node = clip.snap_to_node(G, *dest, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
     if o_node == d_node:
