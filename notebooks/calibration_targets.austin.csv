@@ -1,0 +1,20 @@
+route_name,area,ideal_score,confidence,tier,notes,model_score,model_safety,model_comfort,model_path,model_len_m
+walkability_anchors:high#2,walkability_anchors · high#2,,,,,88,0.91,0.8,0.9,807
+walkability_anchors:high#3,walkability_anchors · high#3,,,,,85,0.91,0.83,0.8,708
+walkability_anchors:high#0,walkability_anchors · high#0,,,,,85,0.85,0.86,0.83,632
+walkability_anchors:high#1,walkability_anchors · high#1,,,,,82,0.79,0.83,0.86,644
+over_water_crossing:water#3,over_water_crossing · water#3,,,,,79,0.83,0.75,0.76,1493
+over_water_crossing:water#1,over_water_crossing · water#1,,,,,79,0.83,0.76,0.75,1541
+over_water_crossing:water#4,over_water_crossing · water#4,,,,,76,0.72,0.8,0.8,2459
+over_water_crossing:water#0,over_water_crossing · water#0,,,,,71,0.76,0.69,0.67,2129
+over_water_crossing:water#2,over_water_crossing · water#2,,,,,66,0.66,0.7,0.63,1348
+data_seam_straddling:seam#2,data_seam_straddling · seam#2,,,,,54,0.6,0.76,0.38,6956
+data_seam_straddling:seam#1,data_seam_straddling · seam#1,,,,,43,0.51,0.72,0.56,21498
+walkability_anchors:low#1,walkability_anchors · low#1,,,,,31,0.21,0.65,0.42,997
+data_seam_straddling:seam#4,data_seam_straddling · seam#4,,,,,29,0.38,0.76,0.58,9295
+data_seam_straddling:seam#0,data_seam_straddling · seam#0,,,,,29,0.31,0.58,0.39,6678
+data_seam_straddling:seam#3,data_seam_straddling · seam#3,,,,,25,0.29,0.73,0.5,12959
+data_seam_straddling:seam#5,data_seam_straddling · seam#5,,,,,23,0.23,0.59,0.26,9194
+walkability_anchors:low#2,walkability_anchors · low#2,,,,,16,0.19,0.81,0.28,1153
+walkability_anchors:low#0,walkability_anchors · low#0,,,,,13,0.16,0.81,0.17,241
+walkability_anchors:low#3,walkability_anchors · low#3,,,,,4,0.15,0.75,0.15,742

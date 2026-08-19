@@ -275,8 +275,11 @@ def emit_survey(G, candidates, city: str) -> None:
     except Exception as exc:  # pragma: no cover
         print(f"    [WARN] could not build calibration deck: {type(exc).__name__}: {exc}")
         return
-    print(f"    open {out.name} and fill subjective ratings into "
-          f"ground_truth.{city}.csv — the ONLY human step (structural checks are automated)")
+    tname = ("calibration_targets.csv" if city == "boston"
+             else f"calibration_targets.{city}.csv")
+    print(f"    open {out.name} and fill ideal_score + notes into "
+          f"{tname} (matched by route_name) — the ONLY human step "
+          f"(structural checks are automated)")
 
 
 # ---------------------------------------------------------------------------

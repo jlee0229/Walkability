@@ -1,37 +1,89 @@
-# calibration_targets.csv — point-estimate calibration ground truth
+# calibration_targets.\<city\>.csv — the standing calibration ground truth
 
-Human walkability **point estimates** for fitting the score scale (the planned
-distribution re-anchor, and future calibration work). This is the *calibration*
-counterpart to `ground_truth.csv`: where `ground_truth.csv` logs per-segment
-field observations (surface, condition, sides) for **flagging** routes OK/HIGH/LOW
-against fuzzy ranges, this file collects a single committed **number per route**
-for **fitting** the raw→displayed transform.
+Human walkability **point estimates** for fitting/checking the score scale. This
+is the **go-forward calibration format** — it replaced the rigid 1–5
+`subj_walkability` column in `ground_truth.csv`. The recurring human task is now
+just two things per route: **give an `ideal_score` (0–100) and a reason.**
 
-## Why points, not ranges
-The earlier "ideal 80–85" ranges were a pass-band for flagging. For calibrating a
-transform they're too coarse: the compression we're resolving is only ~3–5 points,
-so a 5-wide range is as wide as the signal and can't pin the ordering/spacing the
-re-anchor must reproduce. A point forces commitment; a transform needs a target.
+Per-city, mirroring the `ground_truth.<city>.csv` convention:
+`calibration_targets.csv` is Boston; every other city gets a sibling
+`calibration_targets.<city>.csv` (e.g. `calibration_targets.austin.csv`).
+
+Division of labour with the other ground-truth file:
+- **this file** — one committed **number per route** for calibrating the score
+  (the standing, recurring pass).
+- **`ground_truth.csv`** — per-segment field observations (surface, condition,
+  sides) used **on demand** to diagnose *why* a specific route is mis-scored. Not
+  a recurring chore; reach for it only when a row here is wrong and you want to
+  attribute it to a data gap vs. data-quality vs. weight problem.
+
+## Where the rows come from (don't hand-pick)
+The routes are **auto-derived** from the `verify_city.py` route-type battery (the
+global taxonomy in `route_types.py`) — the same battery that drives the auto
+calibration deck. Every run regenerates:
+- `notebooks/<city>_calibration_survey.auto.html` — the visual deck (map, numbered
+  segments, per-dimension bars, Street View links), and
+- `notebooks/calibration_targets.<city>.csv` — this file, with the `model_*`
+  reference columns **pre-filled and refreshed**, human columns left blank.
+
+Regenerate either way:
+```bash
+python notebooks/verify_city.py --city austin            # emits deck + syncs this CSV
+python notebooks/calibration_survey.py --city austin --auto --k 16          # deck + CSV
+python notebooks/calibration_survey.py --city austin --auto --k 16 --blind  # blind deck
+```
+The sync is **merge-preserving**: it keys on `route_name`, so re-running refreshes
+the `model_*` snapshot **without touching any `ideal_score` you've already filled**;
+new battery routes appear blank, dropped ones fall off. Safe to run every build.
+
+### Rate blind (recommended for the calibration pass)
+`--blind` writes `<city>_calibration_survey.auto.blind.html`: the model's verdict
+(overall score, dimension bars, audit flags) is hidden and the routes are shuffled,
+so your `ideal_score` is an **independent** judgment instead of an echo of the model
+— which is the whole point of a calibration target, and the only way to catch
+systematic over/under-scoring (the model can't grade its own homework). Segment
+colours + Street View stay as a navigation aid. The `model_*` columns are still
+written to the CSV (blindness only governs what you *see* while rating). Use the
+plain (non-blind) deck when you instead want to *verify* believability — there the
+model number is the stimulus you react to.
+
+## Workflow
+1. Regenerate (command above) → open `<city>_calibration_survey.auto.html`.
+2. For each card, read the map / Street View and decide your `ideal_score`. The
+   grey chip after the card title (e.g. `walkability_anchors:high#0`) is the
+   **`route_name`** — the row key. The copy-paste block at the bottom of each card
+   mirrors the four human columns.
+3. Fill `ideal_score` (+ `confidence`/`tier`/`notes`) in the matching row.
+4. Later: fit / drift-check against `model_score` (see `Research/reanchor_spec.md`).
 
 ## What to actually sweat (read before filling)
-The **absolute** number is the fuzzy part and drifts. What the re-anchor most needs,
+The **absolute** number is the fuzzy part and drifts. What calibration most needs,
 and what human judgment is most reliable at, is **relative**:
 1. **Ordering** — rank the routes, especially within the tails (is the car-free
    greenway above the busy commercial street? by how much?).
 2. **Tier gaps** — how *much* higher is a pedestrian-designed route than a normal
-   sidewalk-beside-traffic? 3 points or 12? That gap magnitude *is* the re-anchor.
+   sidewalk-beside-traffic? 3 points or 12? That gap magnitude is the signal.
 3. **Hard anchors** — two or three confident endpoints ("worst here ≈ 55", "best
    car-free ≈ low 90s") pin the scale; the middle interpolates.
 
-So: give an exact `ideal_score`, but invest your confidence in getting the *ordering
-and tier-gaps* right, not 82-vs-83. Tag `confidence` so the fit can down-weight a
-guess and not over-fit it (the false-precision trap of point estimates).
+So give an exact `ideal_score`, but invest your confidence in the *ordering and
+tier-gaps*, not 82-vs-83. Tag `confidence` so the fit can down-weight a guess and
+not over-fit it — this is what buys back the flexibility of a range without the
+false-precision trap of committing to two numbers.
 
-**Judge from the map / Street View, not the model number.** `model_score` is in the
-file for later drift analysis, but reading it first anchors your estimate to it.
+**Judge from the map / Street View, not the model number.** `model_score` is in
+the file (and on the card) for drift analysis, but anchoring your estimate to it
+defeats the point.
+
+## Why a point + confidence, not a range
+The earlier "ideal 80–85" ranges were a pass-band for flagging. For calibrating a
+scale they're too coarse: the compression we resolve is only ~3–5 points, so a
+5-wide range is as wide as the signal and can't pin ordering/spacing. A point
+forces commitment; `confidence=rough` restores the "I'm not sure" flexibility by
+down-weighting soft estimates in the fit.
 
 ## Columns
-Human-filled (left side):
+Human-filled:
 - `ideal_score` — your walkability point estimate, **0–100**.
 - `confidence` — `sure` | `rough`.
 - `tier` — coarse bucket for the relative ordering. Suggested vocabulary
@@ -47,41 +99,21 @@ Human-filled (left side):
   via distance-from-traffic vs calm-traffic respectively) — both typically high 80s,
   above a bare sidewalk, below a true car-free path. NB: `road_separation` (distance
   to nearest road) is exactly the signal meant to reward `buffered`, so these rows
-  are the test of whether B's graded ceiling lifts a buffer enough — but it can't
-  see buffer *quality* (a bike lane vs empty asphalt read the same).
-- `notes` — anything: which dimension feels off, a bad detour, "should be higher because…".
+  test whether the graded ceiling lifts a buffer enough — but it can't see buffer
+  *quality* (a bike lane vs empty asphalt read the same).
+- `notes` — anything: which dimension feels off, a bad detour, "should be higher
+  because…"; name a segment # if something's factually wrong on the ground.
 
-Reference (right side, pre-filled — do not edit by hand):
+Key + reference (auto-filled — do not edit by hand):
+- `route_name` — the battery route id and the merge key. Matches the card chip.
+- `area` — human-readable label for the route.
 - `model_score`, `model_safety`, `model_comfort`, `model_path`, `model_len_m`
-  — the model's current values, for drift analysis and to see *which dimension*
-  diverges from your number.
+  — the model's current values, refreshed on every regenerate, for drift analysis
+  and to see *which dimension* diverges from your number.
 
-## Model snapshot
-The `model_*` columns were regenerated **2026-06-28** against the model state:
-env-rework (A industrial down-weight + B graded car ceiling) + the re-anchor levers
-(graded `EYES_CEIL` by openness, `PED_PATH_COMFORT`, `CAR_SAFETY_CEIL` 0.82) + the
-tunnel-arterial fix (underground roads dropped from off-path) + **comfort
-top-compression** (`COMFORT_COMPRESS_KNEE`=0.80 / `_K`=0.50) + crossing-aware
-phase-3 guard, at `alpha=2.0`. Calibration vs the `ideal_score`s: MAE ≈ 2.35,
-bias ≈ +0.2 (down from +0.9 before comfort compression). The top band now has
-headroom (jamaica_pond 91, back_bay/comm_mall 89) and the car-shared cluster sits
-lower; the residual is a small upward bias plus the accepted Seaport openness
-undershoot (70 vs 80).
-
-**2026-07-04 refresh** — same scoring code, regenerated against the
-**metro-hull** graph (89,415 nodes; Boston + Brookline + Cambridge/Somerville/
-Everett/Chelsea, `--force` rebuilt today; the re-anchor levers were first baked
-by the 2026-07-03 Brookline rebuild). Only one route moved vs the 06-28
-snapshot: `dorchester_to_downtown` 74 → 75 (same length — score shift, not a
-corridor change); the hull towns themselves moved **zero** of the 30 routes.
-Fit vs `ideal_score`: **MAE ≈ 2.30, bias ≈ +0.3** over 30 routes.
-`calibration_survey.html` regenerated the same day.
-
-## Extending / re-running
-Append new routes by adding them to `SURVEY_ROUTES` (calibration_survey.py) and
-regenerating the `model_*` columns. To refresh the reference values after a scoring
-change (without touching your filled-in `ideal_score`s, re-merge on `route_name`):
-the model columns come from `find_routes(...).walk_score` and `.dimension_scores`
-at `alpha=2.0` — the same call used to build the survey HTML. Re-snapshot the model
-version/date in this README each time so a row's `model_*` is never ambiguous about
-which model produced it.
+## History
+The prior 30-route hand-picked deck used for the 2026-06-28 → 07-04 distribution
+re-anchor (fit MAE ≈ 2.30, bias ≈ +0.3) is archived at
+`notebooks/archive/calibration_targets.reanchor-2026-06-28.csv`. As of **2026-07-13**
+this file is a fresh reset onto the auto-battery routes for a uniform, city-agnostic
+system (Boston + Austin); those routes are re-rated from scratch.

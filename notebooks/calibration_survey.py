@@ -26,6 +26,7 @@ CATEGORY_WEIGHTS / CATEGORY_FLOOR needs. The numbered segments make the
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 from pathlib import Path
 
@@ -606,9 +607,12 @@ body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;max-width:980px;marg
 h1{font-size:26px;margin:0 0 4px} h2{font-size:19px;margin:0}
 .sub{color:#666;margin:0 0 18px}
 .intro{background:#fff;border:1px solid #e6e0d6;border-radius:10px;padding:16px 18px;margin:0 0 22px}
+.blindbanner{background:#2c2a26;color:#ede7da;border-radius:10px;padding:12px 16px;margin:0 0 18px;font-size:14px}
+.blindbanner code{background:#48453e;padding:1px 4px;border-radius:3px}
 .intro ol{margin:8px 0 0;padding-left:20px} .intro li{margin:4px 0}
 .card{background:#fff;border:1px solid #e6e0d6;border-radius:10px;padding:16px 18px;margin:0 0 22px}
 .card h2 .n{display:inline-block;width:26px;height:26px;line-height:26px;text-align:center;background:#c75b39;color:#fff;border-radius:50%;font-size:14px;margin-right:8px}
+.card h2 .rk{font:12px/1 ui-monospace,Menlo,monospace;color:#8a8578;background:#f2efe8;border:1px solid #e6e0d6;border-radius:5px;padding:3px 6px;margin-left:8px;vertical-align:middle}
 .look{color:#555;font-style:italic;margin:6px 0 12px}
 .panel{display:flex;gap:22px;flex-wrap:wrap;align-items:center;background:#f7f4ee;border-radius:8px;padding:12px 14px;margin:0 0 12px}
 .big{font-size:30px;font-weight:700} .big small{font-size:13px;font-weight:400;color:#777}
@@ -631,16 +635,19 @@ details.segs{margin:4px 0 0} details.segs summary{cursor:pointer;color:#666;font
 .miss{color:#b33}
 """
 
+# Q0 has a non-blind variant (shows model dims for context) and a blind variant
+# (model verdict hidden so the estimate stays independent). Q1–Q3 leak nothing.
+Q_IDEAL = "Your ideal walk_score for this route, <b>0–100</b>. Judge from the map / Street View — the model's number (safety {safety}, comfort {comfort}, path {path}) is shown for context, but deciding independently is the whole point. Sweat the <b>ordering &amp; tier gaps</b>, not 58-vs-62."
+Q_IDEAL_BLIND = "Your ideal walk_score for this route, <b>0–100</b>, from the map / Street View alone — the model's scores are hidden on purpose so your estimate stays independent. Sweat the <b>ordering &amp; tier gaps</b>, not 58-vs-62."
 QUESTIONS = [
-    "Overall, how walkable is this route, 1–5? (5 = great)",
-    "The model scored it {score}/100. Is that too HIGH, about RIGHT, or too LOW?",
-    "If it feels off, WHICH dimension is to blame? — cars/traffic (safety), feels unsafe/empty (safety-eyes), surface/width (comfort), \"not a real walking route / on a road\" (path), or none. (Model: safety {safety}, comfort {comfort}, path {path}.)",
-    "Is this the route you'd actually walk between these points? If not, what's wrong (zig-zags / avoids a nicer street / takes a busy road)?",
-    "Anything factually wrong on the ground? Name the SEGMENT # (from the map/table) and what's off — a sidewalk that isn't there, a surface mis-rated, a bad crossing.",
+    Q_IDEAL,
+    "Confidence: <b>sure</b> or <b>rough</b> (rough is down-weighted in the fit, so don't agonise).",
+    "Tier: car_free / buffered / ped_priority / good / mixed / poor / hostile — the coarse bucket that pins relative ordering.",
+    "Notes / reasoning: which dimension feels off, a bad detour, \"should be higher because…\". Name a SEGMENT # (from the map/table) if something's factually wrong on the ground — a sidewalk that isn't there, a surface mis-rated, a bad crossing.",
 ]
 
 
-def _card(i: int, r: dict) -> str:
+def _card(i: int, r: dict, blind: bool = False) -> str:
     if not r.get("found"):
         return (f'<div class="card"><h2><span class="n">{i}</span>{html.escape(r["area"])}</h2>'
                 f'<p class="miss">No route resolved between these points — I will adjust the endpoints. '
@@ -648,35 +655,46 @@ def _card(i: int, r: dict) -> str:
     cats = r["categories"]
     s = cats.get("safety", float("nan")); c = cats.get("comfort", float("nan")); p = cats.get("path", float("nan"))
     flags = r["audit"].get("flags", [])
+    # In blind mode: "worst seg" labels + per-seg scores are model verdicts → drop them.
     sv_links = " ".join(
-        f'<a href="{streetview_url(*w["mid"])}" target="_blank">worst seg #{w["i"]} ({w["walk"]:.2f})</a>'
+        (f'<a href="{streetview_url(*w["mid"])}" target="_blank">Street View seg #{w["i"]}</a>'
+         if blind else
+         f'<a href="{streetview_url(*w["mid"])}" target="_blank">worst seg #{w["i"]} ({w["walk"]:.2f})</a>')
         for w in r["worst"]
     )
+    # QUESTIONS carry trusted inline HTML + {placeholders}; format (not escape) them.
+    questions = [Q_IDEAL_BLIND if blind else QUESTIONS[0], *QUESTIONS[1:]]
     qs = "".join(
-        "<li>" + html.escape(q).format(
-            score=f"{r['walk']*100:.0f}", safety=_fmt(s), comfort=_fmt(c), path=_fmt(p)
-        ) + "</li>"
-        for q in QUESTIONS
+        "<li>" + q.format(safety=_fmt(s), comfort=_fmt(c), path=_fmt(p)) + "</li>"
+        for q in questions
     )
+    name = r.get("name", "")
     tmpl = html.escape(
-        f"[{i}] {r['area']}\n"
-        f"  walkable_1to5: \n"
-        f"  model_score_too: high|right|low\n"
-        f"  worst_dimension: safety|safety-eyes|comfort|path|none\n"
-        f"  would_you_walk_it: yes|no -> \n"
-        f"  ground_truth_wrong (seg #): \n"
+        f"[{name}]  {_area_label(r['area'])}\n"
+        f"  ideal_score (0-100): \n"
+        f"  confidence: sure|rough\n"
+        f"  tier: car_free|buffered|ped_priority|good|mixed|poor|hostile\n"
+        f"  notes: \n"
     )
-    return f"""<div class="card">
-  <h2><span class="n">{i}</span>{html.escape(r['area'])}</h2>
-  <p class="look">{html.escape(r['look_for'])}</p>
-  <div class="mapwrap">{_route_map_html(r)}</div>
+    # Blind hides the model's verdict signals (overall score, dimension bars, audit
+    # flags, route confidence); the map's segment colours + Street View stay as a
+    # navigation aid. See --blind.
+    panel = "" if blind else f"""
   <div class="panel">
     <div><div class="big">{r['walk']*100:.0f}<small>/100</small></div></div>
     <div class="bars">{_bar('safety', s)}{_bar('comfort', c)}{_bar('path', p)}</div>
-  </div>
+  </div>"""
+    conf_txt = "" if blind else f"confidence {r['confidence']:.2f} · "
+    flags_txt = "" if (blind or not flags) else \
+        '· <span class="flags">flags: ' + html.escape(', '.join(flags)) + '</span>'
+    return f"""<div class="card">
+  <h2><span class="n">{i}</span>{html.escape(_area_label(r['area']))}
+     <span class="rk" title="calibration_targets row key">{html.escape(name)}</span></h2>
+  <p class="look">{html.escape(r['look_for'])}</p>
+  <div class="mapwrap">{_route_map_html(r)}</div>{panel}
   <p class="meta"><b>{r['length_m']:.0f} m</b> · ~{r['minutes']:.0f} min ·
-     confidence {r['confidence']:.2f} · alpha moves path: <b>{'yes' if r['alpha_moves'] else 'no'}</b>
-     {'· <span class="flags">flags: '+html.escape(', '.join(flags))+'</span>' if flags else ''}</p>
+     {conf_txt}alpha moves path: <b>{'yes' if r['alpha_moves'] else 'no'}</b>
+     {flags_txt}</p>
   <p class="links"><b>Look:</b>
      <a href="{streetview_url(*r['coords'][0])}" target="_blank">Street View (start)</a>
      <a href="{_gmaps_route(r['origin'], r['dest'])}" target="_blank">Google walking route</a>
@@ -688,24 +706,22 @@ def _card(i: int, r: dict) -> str:
 </div>"""
 
 
-def build_html(results: list[dict], city: str = "Boston") -> str:
-    cards = "\n".join(_card(i, r) for i, r in enumerate(results, start=1))
+def build_html(results: list[dict], city: str = "Boston", blind: bool = False) -> str:
+    cards = "\n".join(_card(i, r, blind=blind) for i, r in enumerate(results, start=1))
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Walkability calibration survey — {html.escape(city)}</title><style>{CSS}</style></head><body>
 <h1>Walkability calibration survey — {html.escape(city)}</h1>
-<p class="sub">{len(results)} routes across {html.escape(city)} · model = the new HDI-style two-level score.
-Answer per route; replies tune CATEGORY_WEIGHTS / CATEGORY_FLOOR and surface data problems.</p>
-<div class="intro"><b>How to read each card</b>
+<p class="sub">{len(results)} routes across {html.escape(city)} · model = the HDI-style two-level score.
+For each card give an <b>ideal_score (0–100)</b> + reasoning in the matching
+<code>route_name</code> row of <code>calibration_targets.{html.escape(city.split()[0].lower())}.csv</code>.</p>
+{'<div class="blindbanner"><b>Blind pass.</b> The model&#39;s scores (overall number, dimension bars, flags) are hidden and the routes are shuffled — so your <code>ideal_score</code> is an independent judgment, not an echo of the model. Segment colours + Street View remain to help you read the ground.</div>' if blind else ''}
+<div class="intro"><b>How to read each card, and what to record</b>
 <ol>
 <li><b>Map</b>: the route, each <b>segment</b> (one street) drawn + numbered and coloured by its walk_score (red→green). Hover or click a segment for detail + Street View; the numbers match the segment table.</li>
-<li><b>Big number</b> = the route's overall walk_score (0–100).</li>
-<li><b>Bars</b> = the three dimensions (length-weighted): <b>safety</b> (cars + eyes-on-street), <b>comfort</b> (surface/material/width), <b>path</b> (is it a real walking right-of-way). The score is a weighted geometric mean of them (currently safety 1.4 : path 1.0 : comfort 0.6).</li>
+{'<li><b>Scores are hidden</b> in this blind pass — no overall number or dimension bars. Judge walkability from the map geometry + Street View, on the 0–100 scale, on your own.</li>' if blind else '<li><b>Big number</b> = the model&#39;s current walk_score (0–100); <b>bars</b> = its three length-weighted dimensions — <b>safety</b> (cars + eyes-on-street), <b>comfort</b> (surface/material/width), <b>path</b> (real walking right-of-way). Shown for context — your <code>ideal_score</code> is your own call.</li>'}
+<li>The grey chip after each title (e.g. <code>high#0</code>) is the <b>route_name</b> — the row key in the CSV. Fill <code>ideal_score</code>, <code>confidence</code>, <code>tier</code>, <code>notes</code>; the copy-paste block at the bottom of each card mirrors those columns.</li>
 </ol>
-<b>Two global questions first:</b>
-<ol>
-<li>Rank the three dimensions by how much they matter to YOU: safety, comfort, path legitimacy.</li>
-<li>Across all routes, is the model systematically too high, too low, or about right?</li>
-</ol></div>
+<b>What to sweat</b> (the fit needs relative structure, not absolute precision): get the <b>ordering</b> right (is the car-free path clearly above the busy stroad?) and the <b>tier gaps</b> (how <i>much</i> higher — 3 points or 12?). Two or three confident hard anchors (worst ≈ , best ≈ ) pin the scale; the middle interpolates.</div>
 {cards}
 </body></html>"""
 
@@ -751,17 +767,101 @@ def auto_pick_routes(candidates: list[dict], k: int = 15) -> list[dict]:
             for c in picked]
 
 
+# ---------------------------------------------------------------------------
+# calibration_targets.<city>.csv — the standing "score + reasoning" ground truth
+# ---------------------------------------------------------------------------
+#
+# This is the go-forward calibration format (it replaced the rigid 1-5
+# ``subj_walkability`` in ground_truth.csv). The human fills FOUR columns —
+# ``ideal_score`` (0-100), ``confidence``, ``tier``, ``notes`` — everything else
+# is a pre-filled model-side reference, refreshed on every run so drift analysis
+# reads against the current build. Column semantics: calibration_targets.README.md.
+
+TARGET_FIELDS = [
+    "route_name", "area", "ideal_score", "confidence", "tier", "notes",
+    "model_score", "model_safety", "model_comfort", "model_path", "model_len_m",
+]
+_HUMAN_FIELDS = ("ideal_score", "confidence", "tier", "notes")
+
+
+def targets_path(city: str) -> Path:
+    """Per-city targets file — Boston is the base name, others get a sibling
+    (mirrors the ground_truth.<city>.csv convention)."""
+    name = "calibration_targets.csv" if city == "boston" \
+        else f"calibration_targets.{city}.csv"
+    return Path(__file__).with_name(name)
+
+
+def _area_label(area: str) -> str:
+    """The battery's ``area`` embeds a live ``· walk=0.NN`` suffix that churns
+    every build; strip it so the label column stays stable."""
+    return area.split(" · walk=")[0]
+
+
+def sync_targets_csv(results: list[dict], city: str,
+                     out: Path | None = None) -> tuple[Path, int, int]:
+    """Merge the auto-survey routes into the per-city calibration_targets CSV.
+
+    Model-side columns are (re)written from ``results`` so the reference snapshot
+    tracks the current build; the four human columns are PRESERVED for any route
+    already rated (keyed on ``route_name``) and left blank for new routes. Safe to
+    re-run — it never clobbers a filled ``ideal_score``. Returns
+    ``(path, n_rows, n_unrated)``.
+    """
+    out = out or targets_path(city)
+    prior: dict[str, dict] = {}
+    if out.exists():
+        with out.open(newline="") as fh:
+            for row in csv.DictReader(fh):
+                prior[row.get("route_name", "")] = row
+
+    rows, unrated = [], 0
+    for r in results:
+        if not r.get("found"):
+            continue
+        cats = r["categories"]
+        name = r.get("name", "")
+        keep = prior.get(name, {})
+        row = {
+            "route_name": name,
+            "area": _area_label(r.get("area", "")),
+            "ideal_score": keep.get("ideal_score", ""),
+            "confidence": keep.get("confidence", ""),
+            "tier": keep.get("tier", ""),
+            "notes": keep.get("notes", ""),
+            "model_score": round(r["walk"] * 100),
+            "model_safety": round(cats.get("safety", float("nan")), 2),
+            "model_comfort": round(cats.get("comfort", float("nan")), 2),
+            "model_path": round(cats.get("path", float("nan")), 2),
+            "model_len_m": round(r["length_m"]),
+        }
+        if not str(row["ideal_score"]).strip():
+            unrated += 1
+        rows.append(row)
+
+    with out.open("w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=TARGET_FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    return out, len(rows), unrated
+
+
 def build_auto_survey(G, candidates: list[dict], city: str, k: int = 15,
-                      out: Path | None = None) -> Path:
-    """Render the auto-picked calibration deck from battery candidates → HTML.
+                      out: Path | None = None, blind: bool = False) -> Path:
+    """Render the auto-picked calibration deck from battery candidates → HTML,
+    and sync the per-city calibration_targets CSV stub alongside it.
 
     Reuses ``_survey`` / ``build_html`` unchanged, so the auto deck has the same
     per-dimension bars, numbered segments and Street View links as the hand-picked
-    one. This is the single genuinely-manual verification step: the human fills
-    subjective ratings, everything structural is automated.
+    one. This is the single genuinely-manual verification step: the human reads a
+    card and fills ``ideal_score`` + ``notes`` (+ optional ``confidence``/``tier``)
+    for the matching ``route_name`` row in ``calibration_targets.<city>.csv``;
+    everything structural is automated.
     """
     cases = auto_pick_routes(candidates, k=k)
-    out = out or Path(__file__).with_name(f"{city}_calibration_survey.auto.html")
+    default_name = (f"{city}_calibration_survey.auto"
+                    f"{'.blind' if blind else ''}.html")
+    out = out or Path(__file__).with_name(default_name)
     results = []
     for case in cases:
         try:
@@ -769,9 +869,19 @@ def build_auto_survey(G, candidates: list[dict], city: str, k: int = 15,
         except Exception as exc:
             r = {**case, "found": False, "error": f"{type(exc).__name__}: {exc}"}
         results.append(r)
-    out.write_text(build_html(results, city=f"{city.capitalize()} (auto)"))
+    # Deck order is shuffled for a blind pass (position leaks the model's ranking);
+    # the CSV keeps the stable high→low order — it's keyed on route_name anyway.
+    deck = list(results)
+    if blind:
+        import random
+        random.Random(7).shuffle(deck)
+    title = f"{city.capitalize()} (auto{', blind' if blind else ''})"
+    out.write_text(build_html(deck, city=title, blind=blind))
     print(f"Wrote {sum(1 for r in results if r.get('found'))}/{len(results)} "
           f"auto-picked routes → {out}")
+    tpath, nrows, unrated = sync_targets_csv(results, city)
+    print(f"Synced {nrows} rows → {tpath.name} "
+          f"({unrated} awaiting an ideal_score, {nrows - unrated} already rated)")
     return out
 
 
@@ -790,6 +900,10 @@ def main():
                          "of the hand-picked CITY_ROUTES (works for any city).")
     ap.add_argument("--k", type=int, default=15, help="Auto: number of routes to pick.")
     ap.add_argument("--seed", type=int, default=7, help="Auto: battery sampling seed.")
+    ap.add_argument("--blind", action="store_true",
+                    help="Auto: hide the model's scores (overall + dimension bars + "
+                         "flags) and shuffle route order, so the ideal_score pass is "
+                         "an independent judgment. Writes *.auto.blind.html.")
     args = ap.parse_args()
 
     graph_path = args.graph or str(CITY_PROFILES[args.city].enriched_path)
@@ -801,7 +915,7 @@ def main():
         ctx = route_types.Ctx(G, CITY_PROFILES[args.city], seed=args.seed)
         cands = route_types.run_battery(ctx, lambda *a, **k: None)[0]
         build_auto_survey(G, cands, args.city, k=args.k,
-                          out=Path(args.out) if args.out else None)
+                          out=Path(args.out) if args.out else None, blind=args.blind)
         return
 
     if args.city not in CITY_ROUTES:
