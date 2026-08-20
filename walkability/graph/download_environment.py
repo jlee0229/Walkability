@@ -35,18 +35,12 @@ import math
 import geopandas as gpd
 import osmnx as ox
 
-from walkability.config import CACHE_DIR, PLACES
-from walkability.graph.environment import (
-    ARTERIALS_PATH,
-    BUILDINGS_PATH,
-    LANDUSE_PATH,
-    OPENSPACE_PATH,
-    POIS_PATH,
-    ROADS_PATH,
-)
+from walkability.config import CACHE_DIR
+from walkability.graph.inventory import BOSTON_PROFILE, CITY_PROFILES, CityProfile
 from walkability.scoring.weights import (
     ARTERIAL_HIGHWAY_TAGS,
     LANDUSE_TAGS,
+    PARKING_TAGS,
     ROAD_HIGHWAY_TAGS,
 )
 
@@ -56,11 +50,10 @@ OPENSPACE_LEISURE = ["park", "garden", "nature_reserve", "recreation_ground",
 ox.settings.cache_folder = str(CACHE_DIR)
 ox.settings.use_cache = True
 
-# Must cover the SAME extent as the walk graph (config.PLACES = Boston + Brookline).
-# If these feature layers stayed Boston-only while the graph widened, every
-# Brookline (and border-Boston) edge would silently get environment_score/safety
-# = 0 — see verify_system.py::check_data_source_seam assertion (a).
-PLACE = PLACES
+# The extent (profile.places) and output layer paths (profile.env_layer_path)
+# come from the CityProfile. They MUST cover the same extent as that city's walk
+# graph — if the feature layers lagged behind a widened graph, border edges would
+# silently get environment_score/safety = 0 (verify_system.py::check_data_source_seam).
 
 
 def _save(gdf: gpd.GeoDataFrame, path) -> None:
@@ -83,12 +76,13 @@ def _flatten(series):
     return series.map(f)
 
 
-def download_arterials(force: bool = False) -> None:
-    if ARTERIALS_PATH.exists() and not force:
-        print(f"Arterials already cached at {ARTERIALS_PATH.name} (use --force).")
+def download_arterials(profile: CityProfile, force: bool = False) -> None:
+    path = profile.env_layer_path("arterials")
+    if path.exists() and not force:
+        print(f"Arterials already cached at {path.name} (use --force).")
         return
     print(f"Fetching arterials ({', '.join(ARTERIAL_HIGHWAY_TAGS)}) ...")
-    gdf = ox.features_from_place(PLACE, tags={"highway": ARTERIAL_HIGHWAY_TAGS})
+    gdf = ox.features_from_place(profile.places, tags={"highway": ARTERIAL_HIGHWAY_TAGS})
     # Keep clean single-string highway values (drops the rare list/None rows so
     # the GeoPackage stays serialisable and reach lookup is unambiguous).
     gdf = gdf[gdf["highway"].isin(ARTERIAL_HIGHWAY_TAGS)]
@@ -103,25 +97,27 @@ def download_arterials(force: bool = False) -> None:
         if c in gdf.columns:
             gdf[c] = _flatten(gdf[c])
             cols.append(c)
-    _save(gdf[cols], ARTERIALS_PATH)
+    _save(gdf[cols], path)
 
 
-def download_buildings(force: bool = False) -> None:
-    if BUILDINGS_PATH.exists() and not force:
-        print(f"Buildings already cached at {BUILDINGS_PATH.name} (use --force).")
+def download_buildings(profile: CityProfile, force: bool = False) -> None:
+    path = profile.env_layer_path("buildings")
+    if path.exists() and not force:
+        print(f"Buildings already cached at {path.name} (use --force).")
         return
     print("Fetching building footprints ...")
-    gdf = ox.features_from_place(PLACE, tags={"building": True})
+    gdf = ox.features_from_place(profile.places, tags={"building": True})
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
-    _save(gdf[["geometry"]], BUILDINGS_PATH)
+    _save(gdf[["geometry"]], path)
 
 
-def download_pois(force: bool = False) -> None:
-    if POIS_PATH.exists() and not force:
-        print(f"POIs already cached at {POIS_PATH.name} (use --force).")
+def download_pois(profile: CityProfile, force: bool = False) -> None:
+    path = profile.env_layer_path("pois")
+    if path.exists() and not force:
+        print(f"POIs already cached at {path.name} (use --force).")
         return
     print("Fetching shop + amenity POIs ...")
-    gdf = ox.features_from_place(PLACE, tags={"shop": True, "amenity": True})
+    gdf = ox.features_from_place(profile.places, tags={"shop": True, "amenity": True})
     # Keep the TYPE (amenity / shop) so the environment factor can weight
     # high-foot-traffic POIs (restaurant, cafe, …) above street furniture
     # (bench, waste_basket). Flatten any list-valued tags so GPKG can store them.
@@ -133,7 +129,7 @@ def download_pois(force: bool = False) -> None:
                 lambda v: v[0] if isinstance(v, list) and v
                 else (v if isinstance(v, str) else None)
             )
-    _save(gdf, POIS_PATH)
+    _save(gdf, path)
 
 
 def _openspace_kind(natural, landuse, amenity) -> str:
@@ -147,44 +143,47 @@ def _openspace_kind(natural, landuse, amenity) -> str:
     return "park"
 
 
-def download_openspace(force: bool = False) -> None:
-    if OPENSPACE_PATH.exists() and not force:
-        print(f"Open space already cached at {OPENSPACE_PATH.name} (use --force).")
+def download_openspace(profile: CityProfile, force: bool = False) -> None:
+    path = profile.env_layer_path("openspace")
+    if path.exists() and not force:
+        print(f"Open space already cached at {path.name} (use --force).")
         return
     print("Fetching open space (water + parks + cemeteries) ...")
     gdf = ox.features_from_place(
-        PLACE, tags={"natural": "water", "leisure": OPENSPACE_LEISURE,
-                     "landuse": "cemetery", "amenity": "grave_yard"})
+        profile.places, tags={"natural": "water", "leisure": OPENSPACE_LEISURE,
+                              "landuse": "cemetery", "amenity": "grave_yard"})
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     cols = {c: (gdf[c] if c in gdf.columns else [None] * len(gdf))
             for c in ("natural", "landuse", "amenity")}
     gdf["kind"] = [_openspace_kind(n, l, a)
                    for n, l, a in zip(cols["natural"], cols["landuse"], cols["amenity"])]
-    _save(gdf[["geometry", "kind"]], OPENSPACE_PATH)
+    _save(gdf[["geometry", "kind"]], path)
 
 
-def download_landuse(force: bool = False) -> None:
+def download_landuse(profile: CityProfile, force: bool = False) -> None:
     """landuse=industrial polygons → the truck-corridor / warehouse signal (A)."""
-    if LANDUSE_PATH.exists() and not force:
-        print(f"Landuse already cached at {LANDUSE_PATH.name} (use --force).")
+    path = profile.env_layer_path("landuse")
+    if path.exists() and not force:
+        print(f"Landuse already cached at {path.name} (use --force).")
         return
     print(f"Fetching landuse ({', '.join(LANDUSE_TAGS)}) ...")
-    gdf = ox.features_from_place(PLACE, tags={"landuse": LANDUSE_TAGS})
+    gdf = ox.features_from_place(profile.places, tags={"landuse": LANDUSE_TAGS})
     gdf = gdf[gdf["landuse"].isin(LANDUSE_TAGS)]
     gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
-    _save(gdf[["geometry", "landuse"]], LANDUSE_PATH)
+    _save(gdf[["geometry", "landuse"]], path)
 
 
-def download_roads(force: bool = False) -> None:
+def download_roads(profile: CityProfile, force: bool = False) -> None:
     """ALL car-carrying road classes → distance-to-nearest-road for separation (B).
 
     Superset of arterials: includes residential/service/etc. so a path can be told
     apart from a road-free greenway. Geometry only (the distance is all we use)."""
-    if ROADS_PATH.exists() and not force:
-        print(f"Roads already cached at {ROADS_PATH.name} (use --force).")
+    path = profile.env_layer_path("roads")
+    if path.exists() and not force:
+        print(f"Roads already cached at {path.name} (use --force).")
         return
     print(f"Fetching all roads ({len(ROAD_HIGHWAY_TAGS)} classes) ...")
-    gdf = ox.features_from_place(PLACE, tags={"highway": ROAD_HIGHWAY_TAGS})
+    gdf = ox.features_from_place(profile.places, tags={"highway": ROAD_HIGHWAY_TAGS})
     gdf = gdf[gdf["highway"].isin(ROAD_HIGHWAY_TAGS)]
     gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
     # Keep tunnel / layer so load_roads can drop underground segments too: a path
@@ -195,16 +194,40 @@ def download_roads(force: bool = False) -> None:
         if c in gdf.columns:
             gdf[c] = _flatten(gdf[c])
             cols.append(c)
-    _save(gdf[cols], ROADS_PATH)
+    _save(gdf[cols], path)
 
 
-def main(force: bool = False) -> None:
-    download_arterials(force)
-    download_buildings(force)
-    download_pois(force)
-    download_openspace(force)
-    download_landuse(force)
-    download_roads(force)
+def download_parking(profile: CityProfile, force: bool = False) -> None:
+    """Surface parking polygons → the strip-mall "false eyes" signal.
+
+    A large surface lot between sidewalk and building marks a car-oriented strip;
+    environment.py (load_parking) keeps only lots ≥ PARKING_MIN_AREA_M2 and
+    discounts the eyes credit near them. Geometry only (proximity is all we use)."""
+    path = profile.env_layer_path("parking")
+    if path.exists() and not force:
+        print(f"Parking already cached at {path.name} (use --force).")
+        return
+    print("Fetching surface parking (amenity=parking, parking=surface) ...")
+    gdf = ox.features_from_place(profile.places, tags={"amenity": "parking"})
+    # Keep surface lots: parking=surface, or untagged (OSM's default is surface).
+    # Explicitly drop multi-storey / underground decks — those are buildings, not
+    # the open tarmac moat we're penalising.
+    if "parking" in gdf.columns:
+        pk = gdf["parking"].astype("string")
+        gdf = gdf[pk.isin(PARKING_TAGS) | pk.isna()]
+    gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
+    _save(gdf[["geometry"]], path)
+
+
+def main(profile: CityProfile, force: bool = False) -> None:
+    print(f"[{profile.name}] Environment layers for: {', '.join(profile.places)}")
+    download_arterials(profile, force)
+    download_buildings(profile, force)
+    download_pois(profile, force)
+    download_openspace(profile, force)
+    download_landuse(profile, force)
+    download_roads(profile, force)
+    download_parking(profile, force)
     print("Done. Now rebuild with --force so the environment factor bakes in.")
 
 
@@ -213,8 +236,12 @@ if __name__ == "__main__":
         description="Download OSM feature inputs for the environment factor."
     )
     parser.add_argument(
+        "--city", default=BOSTON_PROFILE.name, choices=sorted(CITY_PROFILES),
+        help=f"City to fetch environment layers for (default: {BOSTON_PROFILE.name}).",
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="Re-fetch even if the cached GeoPackages already exist.",
     )
     args = parser.parse_args()
-    main(force=args.force)
+    main(CITY_PROFILES[args.city], force=args.force)

@@ -48,7 +48,9 @@ from walkability.routing.cost import ALPHA_DEFAULT, edge_cost
 from walkability.scoring.factors import (
     RESTRICTED_FOOT_ACCESS,
     _EMPTY_WALK,
+    _as_float,
     _as_str,
+    apply_freeway_veto,
     combine_categories,
     compress_comfort,
     edge_category_scores,
@@ -113,6 +115,10 @@ class RouteResult:
     walk_score:    float
     confidence:    float
     crossing_count: int = 0         # highway=crossing nodes traversed (excl. origin)
+    # CSR runtime only: the RoutingGraph edge index per hop (aligned with `edges`).
+    # Lets the app fetch geometry/fields by index and the CSR refiner mask r1's
+    # edges. Empty on the NetworkX path (which addresses edges by (u, v, key)).
+    edge_indices:  list[int] = field(default_factory=list)
     # Floored route-level per-dimension values (safety/comfort/path) that walk_score
     # combines — the two-level aggregate's intermediate, exposed for the survey and
     # diagnostics so the displayed bars match the score exactly.
@@ -228,6 +234,7 @@ def _build_route(
     edges: list[tuple] = []
     cat_by_edge: list[tuple[dict[str, float], float]] = []  # (category scores, length)
     conf_lengths: list[tuple[float, float]] = []            # (confidence, length)
+    haz_lengths: list[tuple[float, float]] = []             # (freeway_hazard, length)
     total_length = 0.0
     total_cost = 0.0
 
@@ -253,11 +260,15 @@ def _build_route(
         edges.append((u, v, key))
         cat_by_edge.append((cats, length))
         conf_lengths.append((conf, length))
+        haz_lengths.append((_as_float(data.get("freeway_hazard")) or 0.0, length))
         total_length += length
         total_cost += cost
 
     dimension_scores = _aggregate_route_dimensions(cat_by_edge)
     walk_score = combine_categories(dimension_scores) if dimension_scores else _EMPTY_WALK
+    # Non-compensatory barrier-effect veto: a freeway/frontage stretch craters the
+    # route score OUTSIDE the floored geometric mean (factors.apply_freeway_veto).
+    walk_score = apply_freeway_veto(walk_score, haz_lengths)
     if total_length > 0.0:
         confidence = sum(c * L for c, L in conf_lengths) / total_length
     else:
@@ -512,6 +523,19 @@ def find_routes(
     list[RouteResult] :
         Best route first. Empty if origin and destination are disconnected.
     """
+    # A compact CSR RoutingGraph routes through the parallel CSR implementation
+    # (custom A* over integer node indices). Lazy import avoids an import cycle
+    # (csr_router reuses the pure helpers/constants defined here). The NetworkX
+    # MultiDiGraph path below is unchanged.
+    if not isinstance(G, nx.MultiDiGraph):
+        from walkability.routing import csr_router
+        return csr_router.find_routes(
+            G, orig, dest, alpha=alpha, weights=weights, refine_sides=refine_sides,
+            k=k, max_candidates=max_candidates, min_confidence=min_confidence,
+            tie_epsilon=tie_epsilon, conf_beta=conf_beta,
+            detour_factor=detour_factor, min_buffer_m=min_buffer_m,
+        )
+
     o_node = clip.snap_to_node(G, *orig, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
     d_node = clip.snap_to_node(G, *dest, routable_only=True, walk_bias=clip.SNAP_WALK_BIAS_M)
     if o_node == d_node:

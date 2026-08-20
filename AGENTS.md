@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Guidance for Claude Code working in this repo. Terse by design — it captures the
+Guidance for Codex working in this repo. Terse by design — it captures the
 non-obvious rules and gotchas, not tutorials.
 
 ## Commands

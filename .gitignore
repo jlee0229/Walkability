@@ -28,3 +28,7 @@ notebooks/problem_route_maps/
 
 # Bundled reference archives
 Research/*.zip
+.mapillary_token
+
+# Fetched street-level imagery + manifests (regenerable via notebooks/vision_calibration.py --fetch)
+notebooks/vision/

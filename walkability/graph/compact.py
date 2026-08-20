@@ -55,6 +55,7 @@ RUNTIME_EDGE_FLOAT_FIELDS: tuple[str, ...] = (
     "surface_score", "surface_confidence", "surface_material_score",
     "width_score",
     "environment_score", "environment_confidence",
+    "freeway_hazard",   # barrier-effect veto input (factors.apply_freeway_veto)
     "walk_score", "walk_confidence",
 )
 
@@ -200,14 +201,23 @@ def _main() -> None:
     )
 
     ap = argparse.ArgumentParser(description="Build slim runtime graph pickles.")
+    ap.add_argument("--city", default=None,
+                    help="city profile name (compact that city's full enriched graph)")
     ap.add_argument("--dev", action="store_true", help="convert the dev subset(s)")
     ap.add_argument("--region", default=None, help="dev region name (implies --dev)")
     ap.add_argument("--all", action="store_true",
                     help="convert the full graph and every dev region")
+    ap.add_argument("--csr", action="store_true",
+                    help="emit the Phase-2 compact CSR pickle (*.csr.pkl) instead of "
+                         "the runtime pickle; validates the round-trip and logs "
+                         "per-field NaN rates")
     args = ap.parse_args()
 
     targets: list[Path] = []
-    if args.all:
+    if args.city:
+        from walkability.graph.inventory import CITY_PROFILES
+        targets.append(CITY_PROFILES[args.city].enriched_path)
+    elif args.all:
         targets.append(ENRICHED_PATH)
         targets += [dev_region_path(r) for r in DEV_REGIONS]
     elif args.region:
@@ -218,10 +228,18 @@ def _main() -> None:
         targets.append(ENRICHED_PATH)
 
     for src in targets:
-        if not src.exists():
+        if not src.exists() and not (args.csr and runtime_path(src).exists()):
             print(f"  skip {src.name}: not found")
             continue
-        build_runtime(src)
+        if args.csr:
+            from walkability.graph.csr import build_csr
+            out, nan_rates = build_csr(src)
+            import os
+            print(f"  wrote {out.name}: {os.path.getsize(out) / 1e6:.1f} MB")
+            hot = {f: round(r, 3) for f, r in nan_rates.items() if r > 0.0}
+            print(f"    per-field NaN rates (nonzero): {hot}")
+        else:
+            build_runtime(src)
 
 
 if __name__ == "__main__":
