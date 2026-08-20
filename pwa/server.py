@@ -42,19 +42,36 @@ from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
 
 # ---------------------------------------------------------------------------
-# Area config (Boston metro). Mirrors streamlit_app._BOSTON_GEO — keep the bbox
-# in sync with config.PLACES / the PMTiles cut (see CLAUDE.md).
+# Areas (cities). One entry per city — bbox/bias mirror streamlit_app's _AREAS
+# and must stay in sync with the graph extent (see CLAUDE.md). Adding a city =
+# adding one entry here: e.g. Austin would use
+# CITY_PROFILES["austin"].enriched_path for "graph", its bbox/bias/defaults
+# from streamlit_app._AUSTIN_GEO, and {"type": "url", "url": <OpenFreeMap
+# positron>} for "style" (no per-city PMTiles cut needed). The frontend gets
+# everything it needs from /api/config, so no client changes are required.
 # ---------------------------------------------------------------------------
 
-_AREA = {
-    "label": "Boston metro",
-    "bbox": (-71.21, 42.21, -70.94, 42.44),   # lon_min, lat_min, lon_max, lat_max
-    "bias": (42.36, -71.08),                  # lat, lon
-    "covered": "Boston, Brookline, Cambridge, Somerville, Everett, or Chelsea",
-    "from": "Massachusetts State House",
-    "to": "Boston Public Garden",
-    "pmtiles": "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston_metro.pmtiles",
+DEFAULT_AREA = "boston"
+AREAS: dict[str, dict] = {
+    "boston": {
+        "label": "Boston metro",
+        "bbox": (-71.21, 42.21, -70.94, 42.44),   # lon_min, lat_min, lon_max, lat_max
+        "bias": (42.36, -71.08),                  # lat, lon
+        "covered": "Boston, Brookline, Cambridge, Somerville, Everett, or Chelsea",
+        "from": "Massachusetts State House",
+        "to": "Boston Public Garden",
+        "style": {"type": "pmtiles",
+                  "url": "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston_metro.pmtiles"},
+        "graph": ENRICHED_PATH,
+    },
 }
+
+
+def _area(area_id: str) -> dict:
+    a = AREAS.get(area_id)
+    if a is None:
+        raise HTTPException(404, f"Unknown area {area_id!r}.")
+    return a
 
 _GRAPH_RELEASE = "https://github.com/jlee0229/Walkability/releases/download/data-v1"
 _PHOTON_URL = "https://photon.komoot.io/api"
@@ -66,10 +83,10 @@ ALPHA_MAX = 5.0  # slider 0-100 maps to alpha 0-5, same as the Streamlit rail
 
 
 # ---------------------------------------------------------------------------
-# Graph load (once, at startup) — smallest-first ladder like get_graph.
+# Graph load (per area, cached) — smallest-first ladder like get_graph.
 # ---------------------------------------------------------------------------
 
-_GRAPH = None
+_GRAPHS: dict[str, object] = {}
 _GRAPH_LOCK = threading.Lock()
 
 
@@ -88,10 +105,10 @@ def _download_release_asset(p: Path) -> bool:
     return True
 
 
-def _load_graph():
+def _load_graph(graphml: Path):
     """CSR pickle (local, then release) → runtime pickle (local, then release)."""
-    cp = csr_path(ENRICHED_PATH)
-    rt = runtime_path(ENRICHED_PATH)
+    cp = csr_path(graphml)
+    rt = runtime_path(graphml)
     if cp.exists():
         return load_csr(cp)
     if rt.exists():
@@ -107,12 +124,11 @@ def _load_graph():
     )
 
 
-def get_graph():
-    global _GRAPH
-    if _GRAPH is None:
+def get_graph(area_id: str):
+    if area_id not in _GRAPHS:
         with _GRAPH_LOCK:
-            if _GRAPH is None:
-                G = _load_graph()
+            if area_id not in _GRAPHS:
+                G = _load_graph(Path(_area(area_id)["graph"]))
                 # Prewarm the snap/routing caches so the first search is as
                 # snappy as the rest (mirrors streamlit_app._prewarm).
                 try:
@@ -127,8 +143,8 @@ def get_graph():
                         clip._node_walk_quality(G)
                 except Exception:
                     pass
-                _GRAPH = G
-    return _GRAPH
+                _GRAPHS[area_id] = G
+    return _GRAPHS[area_id]
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +152,8 @@ def get_graph():
 # fallback, no town ever appended; the bbox does the disambiguation).
 # ---------------------------------------------------------------------------
 
-def in_coverage(lat: float, lon: float) -> bool:
-    lon_min, lat_min, lon_max, lat_max = _AREA["bbox"]
+def in_coverage(lat: float, lon: float, area: dict) -> bool:
+    lon_min, lat_min, lon_max, lat_max = area["bbox"]
     return lon_min <= lon <= lon_max and lat_min <= lat <= lat_max
 
 
@@ -150,11 +166,12 @@ def _photon_label(props: dict) -> str | None:
 
 
 @lru_cache(maxsize=1024)
-def _geocode_query(q: str):
+def _geocode_query(q: str, area_id: str):
     """(lat, lon, label) within the area, or None. Never raises; every call has
     a hard timeout so geocoding can never hang a request."""
-    bbox = _AREA["bbox"]
-    bias_lat, bias_lon = _AREA["bias"]
+    area = AREAS[area_id]
+    bbox = area["bbox"]
+    bias_lat, bias_lon = area["bias"]
     try:
         resp = _requests.get(
             _PHOTON_URL,
@@ -267,39 +284,46 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 @app.on_event("startup")
 def _startup():
-    get_graph()
+    get_graph(DEFAULT_AREA)
 
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "graph_loaded": _GRAPH is not None}
+    return {"ok": True, "graph_loaded": bool(_GRAPHS)}
 
 
 @app.get("/api/config")
-def api_config():
+def api_config(area: str = DEFAULT_AREA):
+    a = _area(area)
     return {
-        "label": _AREA["label"],
-        "bbox": _AREA["bbox"],
-        "center": [_AREA["bias"][1], _AREA["bias"][0]],  # [lon, lat] for MapLibre
-        "covered": _AREA["covered"],
-        "default_from": _AREA["from"],
-        "default_to": _AREA["to"],
-        "pmtiles": _AREA["pmtiles"],
+        "id": area,
+        "label": a["label"],
+        "bbox": a["bbox"],
+        "center": [a["bias"][1], a["bias"][0]],  # [lon, lat] for MapLibre
+        "covered": a["covered"],
+        "default_from": a["from"],
+        "default_to": a["to"],
+        "style": a["style"],
         "alpha_max": ALPHA_MAX,
+        "areas": [{"id": k, "label": v["label"]} for k, v in AREAS.items()],
     }
 
 
 @app.get("/api/geocode")
-def api_geocode(q: str = Query(..., min_length=1, max_length=200)):
-    hit = _geocode_query(q.strip())
+def api_geocode(q: str = Query(..., min_length=1, max_length=200), area: str = DEFAULT_AREA):
+    a = _area(area)
+    hit = _geocode_query(q.strip(), area)
     if hit is None:
         raise HTTPException(404, f"Couldn't find “{q.strip()}”. Try a more specific address.")
     lat, lon, label = hit
-    if not in_coverage(lat, lon):
+    if not in_coverage(lat, lon, a):
         raise HTTPException(
             422, f"“{q.strip()}” looks outside the covered area. "
-                 f"Humanpath currently covers {_AREA['covered']}.")
-    return {"lat": lat, "lon": lon, "label": label}
+                 f"Humanpath currently covers {a['covered']}.")
+    # `name` is the formal display name of the matched place (label minus the
+    # street/city hint) — what the UI shows once the trip is committed.
+    name = (label or "").split(" · ")[0].split(",")[0].strip() or None
+    return {"lat": lat, "lon": lon, "label": label, "name": name}
 
 
 @app.get("/api/reverse")
@@ -322,13 +346,15 @@ def api_reverse(lat: float, lon: float):
 def api_route(
     olat: float, olon: float, dlat: float, dlon: float,
     alpha: float = Query(2.0, ge=0.0, le=ALPHA_MAX),
+    area: str = DEFAULT_AREA,
 ):
+    a = _area(area)
     for which, lat, lon in (("start", olat, olon), ("destination", dlat, dlon)):
-        if not in_coverage(lat, lon):
+        if not in_coverage(lat, lon, a):
             raise HTTPException(
                 422, f"The {which} looks outside the covered area. "
-                     f"Humanpath currently covers {_AREA['covered']}.")
-    G = get_graph()
+                     f"Humanpath currently covers {a['covered']}.")
+    G = get_graph(area)
     routes = find_routes(G, (olat, olon), (dlat, dlon), alpha=alpha, weights=FACTOR_WEIGHTS)
     return {"routes": [_serialize_route(G, r, FACTOR_WEIGHTS) for r in routes]}
 

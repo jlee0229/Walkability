@@ -40,7 +40,8 @@
       alphaSlider = $("alphaSlider"), alphaWord = $("alphaWord"),
       hint = $("hint"), toastEl = $("toast"), tripPill = $("tripPill"),
       pillFrom = $("pillFrom"), pillTo = $("pillTo"),
-      fabs = $("fabs"), fabFit = $("fabFit"), installBtn = $("installBtn");
+      fabs = $("fabs"), fitChip = $("fitChip"), sampleBtn = $("sampleBtn"),
+      installBtn = $("installBtn");
 
   // ------------------------------------------------------------ formatting
   function scoreHex(s01) {
@@ -73,6 +74,7 @@
 
   // ------------------------------------------------------------------- map
   var map = null, styleLoaded = false, pendingFC = null;
+  var fitPending = false, fitCam = null;  // camera state for the "Fit route" chip
 
   function resolveStyle(pmtilesUrl) {
     var flavor = Object.assign({}, basemaps.namedFlavor("light"), BRAND_FLAVOR);
@@ -90,6 +92,13 @@
     };
   }
 
+  // Per-area basemap: Boston ships the brand PMTiles cut; other cities can use
+  // a plain style URL (e.g. OpenFreeMap positron) — both come from /api/config.
+  function basemapStyle(cfg) {
+    var s = cfg.style || { type: "pmtiles", url: cfg.pmtiles };
+    return s.type === "pmtiles" ? resolveStyle(s.url) : s.url;
+  }
+
   function initMap(cfg) {
     if (typeof maplibregl === "undefined") { toast("Map failed to load."); return; }
     if (maplibregl.addProtocol && typeof pmtiles !== "undefined") {
@@ -97,9 +106,25 @@
     }
     map = new maplibregl.Map({
       container: "map",
-      style: resolveStyle(cfg.pmtiles),
+      style: basemapStyle(cfg),
       center: cfg.center, zoom: 12.6,
       attributionControl: { compact: true },
+    });
+    // "Fit route" chip: appears once the camera has wandered from the fitted
+    // view (any route on screen), disappears on refit. The moveend right after
+    // a fit records the fitted camera as the reference.
+    map.on("moveend", function () {
+      if (fitPending) {
+        fitPending = false;
+        fitCam = { c: map.getCenter(), z: map.getZoom() };
+        return;
+      }
+      if (!state.routes.length || !fitCam) return;
+      var p0 = map.project(fitCam.c), p1 = map.project(map.getCenter());
+      var dx = p0.x - p1.x, dy = p0.y - p1.y;
+      if (Math.sqrt(dx * dx + dy * dy) > 48 || Math.abs(map.getZoom() - fitCam.z) > 0.3) {
+        fitChip.hidden = false;
+      }
     });
     map.on("styleimagemissing", function (e) {
       if (map.hasImage(e.id)) return;
@@ -264,6 +289,8 @@
       window.innerHeight * 0.3);
     var padBottom = Math.min(sheet.hidden ? 40 : sheet.offsetHeight + 24,
                              window.innerHeight * 0.45);
+    fitPending = true;
+    fitChip.hidden = true;
     map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
       padding: { top: padTop, bottom: padBottom, left: 30, right: 30 },
       duration: animate ? 800 : 0, maxZoom: 17,
@@ -428,6 +455,10 @@
       state.focus = 0;
       state.segmented = false;
       state.detailOpen = false;
+      // Adopt the geocoder's formal names ("MIT maseeh" -> "Maseeh Hall") so
+      // the pill and the reopened panel both show the resolved place.
+      if (!state.origin.device) fromInput.value = formalName(state.origin, fromInput.value.trim());
+      if (!state.dest.device) toInput.value = formalName(state.dest, toInput.value.trim());
       renderCards();
       cardsEl.scrollLeft = 0;
       redrawMap();
@@ -442,23 +473,35 @@
     });
   }
 
+  // The formal display name of a resolved endpoint — the geocoder's matched
+  // place name (e.g. "MIT maseeh" -> "Maseeh Hall") — falling back to what the
+  // user typed when there is no better name.
+  function formalName(ep, typed) {
+    if (ep && ep.device) return MYLOC;
+    if (ep && ep.name) return ep.name;
+    if (ep && ep.label) return ep.label.split(" · ")[0].split(",")[0].trim() || typed;
+    return typed;
+  }
+
   function collapseTopbar(collapsed) {
     document.body.classList.toggle("collapsed", collapsed);
     tripPill.hidden = !collapsed;
     if (collapsed) {
-      pillFrom.textContent = (state.origin && state.origin.device) ? MYLOC : fromInput.value.trim();
-      pillTo.textContent = toInput.value.trim();
+      pillFrom.textContent = formalName(state.origin, fromInput.value.trim());
+      pillTo.textContent = formalName(state.dest, toInput.value.trim());
     }
   }
 
   // Keep the floating buttons riding just above the sheet (whose height changes
-  // with cards / an open detail drawer), and only offer Fit when there's a route.
+  // with cards / an open detail drawer). The Fit chip's visibility is driven by
+  // the camera (moveend handler) — here we only make sure it's gone when
+  // there's nothing to fit.
   function positionFabs() {
     var base = sheet.hidden ? 20 : sheet.offsetHeight + 12;
     fabs.style.bottom = "calc(var(--sab) + " + base + "px)";
-    fabFit.hidden = state.routes.length === 0;
+    if (!state.routes.length) fitChip.hidden = true;
   }
-  fabFit.addEventListener("click", function () { fitToFocused(true); });
+  fitChip.addEventListener("click", function () { fitToFocused(true); });
   window.addEventListener("resize", positionFabs);
 
   tripPill.addEventListener("click", function () { collapseTopbar(false); });
@@ -473,6 +516,19 @@
     if (state.origin && state.origin.device) state.origin = null;
   });
   toInput.addEventListener("input", function () { state.dest = null; });
+
+  // Sample walk: fill the area's default trip and run it — a one-tap demo for
+  // a first-time viewer staring at two empty fields.
+  sampleBtn.addEventListener("click", function () {
+    if (!state.config) return;
+    state.origin = null;
+    state.dest = null;
+    fromInput.classList.remove("device-loc");
+    toInput.classList.remove("device-loc");
+    fromInput.value = state.config.default_from;
+    toInput.value = state.config.default_to;
+    search();
+  });
 
   swapBtn.addEventListener("click", function () {
     var f = fromInput.value; fromInput.value = toInput.value; toInput.value = f;

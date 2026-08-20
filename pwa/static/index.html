@@ -38,6 +38,7 @@
       </svg>
       <span class="brand">Humanpath</span>
       <span class="brand-sub" id="areaLabel">Boston metro</span>
+      <button id="sampleBtn" class="sample-chip">Sample walk</button>
       <button id="installBtn" class="install-chip" hidden>Install</button>
     </div>
 
@@ -69,7 +70,7 @@
         <span id="alphaWord" class="alpha-word">Balanced</span>
         <span>Best walk</span>
       </div>
-      <input type="range" id="alphaSlider" min="0" max="100" value="40" aria-label="How you'll walk" />
+      <input type="range" id="alphaSlider" min="0" max="100" value="50" step="25" aria-label="How you'll walk" />
     </div>
 
     <button id="goBtn" class="go-btn">Find routes</button>
@@ -86,16 +87,19 @@
     <span class="pill-edit">Edit</span>
   </button>
 
-  <!-- Floating map controls (locate + fit route) -->
+  <!-- Floating map controls. Locate uses the standard navigation-arrow glyph;
+       "Fit route" is a labelled chip that only appears once the user has
+       panned/zoomed away from the fitted route (contextual, self-explaining). -->
   <div class="fabs" id="fabs">
-    <button id="fabLocate" class="fab fab-locate" title="Use my location" aria-label="Use my location">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
-      </svg>
-    </button>
-    <button id="fabFit" class="fab" title="Fit route" aria-label="Fit the route on screen" hidden>
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <button id="fitChip" class="fit-chip" hidden>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/>
+      </svg>
+      Fit route
+    </button>
+    <button id="fabLocate" class="fab fab-locate" title="Use my location" aria-label="Use my location">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 11l18-8-8 18-2-8-8-2z"/>
       </svg>
     </button>
   </div>

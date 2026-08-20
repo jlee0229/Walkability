@@ -64,8 +64,14 @@ body.collapsed .topbar {
   font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
   text-transform: uppercase; letter-spacing: 0.12em; margin-top: 3px;
 }
-.install-chip {
+.sample-chip {
   margin-left: auto;
+  font-size: 11.5px; font-weight: 500; color: var(--ink-soft);
+  background: transparent; border: 1px solid var(--hairline); border-radius: 999px;
+  padding: 4px 11px;
+}
+.sample-chip:active { background: var(--hairline-soft); }
+.install-chip {
   font-size: 11.5px; font-weight: 600; color: var(--accent);
   background: #f7e9e0; border: 1px solid #e7c9b6; border-radius: 999px;
   padding: 4px 11px;
@@ -115,9 +121,21 @@ input[type="range"] {
   width: 100%; appearance: none; -webkit-appearance: none; height: 26px;
   background: transparent;
 }
+/* Discrete 5-stop dial: flat track + tick marks (one per detent). The old
+   grey→terracotta gradient implied a value judgment the endpoint labels
+   already make; ticks communicate "positions", which is what step=25 means. */
 input[type="range"]::-webkit-slider-runnable-track {
   height: 4px; border-radius: 2px;
-  background: linear-gradient(90deg, var(--ink-faint), var(--accent));
+  background-color: var(--hairline-soft);
+  background-image:
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint));
+  background-repeat: no-repeat;
+  background-size: 2px 4px;
+  background-position: 2% 50%, 26% 50%, 50% 50%, 74% 50%, 98% 50%;
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
@@ -126,7 +144,16 @@ input[type="range"]::-webkit-slider-thumb {
 }
 input[type="range"]::-moz-range-track {
   height: 4px; border-radius: 2px;
-  background: linear-gradient(90deg, var(--ink-faint), var(--accent));
+  background-color: var(--hairline-soft);
+  background-image:
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint)),
+    linear-gradient(var(--ink-faint), var(--ink-faint));
+  background-repeat: no-repeat;
+  background-size: 2px 4px;
+  background-position: 2% 50%, 26% 50%, 50% 50%, 74% 50%, 98% 50%;
 }
 input[type="range"]::-moz-range-thumb {
   width: 18px; height: 18px; border-radius: 50%;
@@ -278,8 +305,15 @@ input[type="range"]::-moz-range-thumb {
 /* ------------------------------------------------------- floating buttons */
 .fabs {
   position: absolute; right: 14px; bottom: calc(var(--sab) + 20px);
-  display: flex; flex-direction: column; gap: 10px; z-index: 18;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px; z-index: 18;
 }
+.fit-chip {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--card); border: 1px solid var(--hairline); border-radius: 999px;
+  box-shadow: var(--shadow); color: var(--ink);
+  font-size: 12.5px; font-weight: 600; padding: 11px 15px;
+}
+.fit-chip:active { background: var(--hairline-soft); }
 .fab {
   width: 48px; height: 48px; border-radius: 50%;
   background: var(--card); border: 1px solid var(--hairline);
