@@ -74,7 +74,10 @@
 
   // ------------------------------------------------------------------- map
   var map = null, styleLoaded = false, pendingFC = null;
-  var fitPending = false, fitCam = null;  // camera state for the "Fit route" chip
+  // "Fit route" chip state: the analytically computed fit target, and a quiet
+  // window covering the fit animation (an eased fitBounds can fire moveend
+  // more than once, so "first moveend after fit" is not a reliable reference).
+  var fitCam = null, fitQuietUntil = 0;
 
   function resolveStyle(pmtilesUrl) {
     var flavor = Object.assign({}, basemaps.namedFlavor("light"), BRAND_FLAVOR);
@@ -111,15 +114,9 @@
       attributionControl: { compact: true },
     });
     // "Fit route" chip: appears once the camera has wandered from the fitted
-    // view (any route on screen), disappears on refit. The moveend right after
-    // a fit records the fitted camera as the reference.
+    // view (any route on screen), disappears on refit.
     map.on("moveend", function () {
-      if (fitPending) {
-        fitPending = false;
-        fitCam = { c: map.getCenter(), z: map.getZoom() };
-        return;
-      }
-      if (!state.routes.length || !fitCam) return;
+      if (!state.routes.length || !fitCam || Date.now() < fitQuietUntil) return;
       var p0 = map.project(fitCam.c), p1 = map.project(map.getCenter());
       var dx = p0.x - p1.x, dy = p0.y - p1.y;
       if (Math.sqrt(dx * dx + dy * dy) > 48 || Math.abs(map.getZoom() - fitCam.z) > 0.3) {
@@ -289,12 +286,15 @@
       window.innerHeight * 0.3);
     var padBottom = Math.min(sheet.hidden ? 40 : sheet.offsetHeight + 24,
                              window.innerHeight * 0.45);
-    fitPending = true;
+    var bounds = [[minLon, minLat], [maxLon, maxLat]];
+    var padding = { top: padTop, bottom: padBottom, left: 30, right: 30 };
+    try {
+      var cam = map.cameraForBounds(bounds, { padding: padding });
+      if (cam) fitCam = { c: cam.center, z: Math.min(cam.zoom, 17) };
+    } catch (e) { fitCam = null; }
+    fitQuietUntil = Date.now() + (animate ? 800 : 0) + 450;
     fitChip.hidden = true;
-    map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-      padding: { top: padTop, bottom: padBottom, left: 30, right: 30 },
-      duration: animate ? 800 : 0, maxZoom: 17,
-    });
+    map.fitBounds(bounds, { padding: padding, duration: animate ? 800 : 0, maxZoom: 17 });
   }
 
   // ------------------------------------------------------------ route cards
