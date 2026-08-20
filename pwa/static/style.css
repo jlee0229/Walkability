@@ -153,9 +153,15 @@ input[type="range"]::-moz-range-thumb {
   padding: 9px 14px 9px 16px; z-index: 19;
 }
 .pill-route {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
   font-size: 13px; color: var(--ink); font-weight: 500;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Each endpoint truncates on its own, so a long place name never hides the
+   other end of the trip. */
+.pill-end {
+  max-width: 132px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pill-arrow { flex: 0 0 auto; color: var(--ink-faint); }
 .pill-edit {
   font-family: var(--mono); font-size: 10px; color: var(--accent);
   text-transform: uppercase; letter-spacing: 0.1em; flex: 0 0 auto;
@@ -170,14 +176,20 @@ input[type="range"]::-moz-range-thumb {
   background: linear-gradient(to top, rgba(240,235,224,0.97) 65%, rgba(240,235,224,0));
 }
 .cards {
-  display: flex; gap: 10px; overflow-x: auto; padding: 10px 14px 4px;
+  /* One shared card width drives BOTH the card size and the side padding, so
+     the snapped card sits dead centre with an even peek of its neighbours —
+     including the first and last card (side padding is what lets them reach
+     the centre at the scroll extremes). Visible peek = padding − gap. */
+  --card-w: min(340px, calc(100vw - 72px));
+  display: flex; gap: 10px; overflow-x: auto;
+  padding: 10px calc((100% - var(--card-w)) / 2) 4px;
   scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
 .cards::-webkit-scrollbar { display: none; }
 
 .route-card {
-  flex: 0 0 78%; max-width: 340px; scroll-snap-align: center;
+  flex: 0 0 var(--card-w); scroll-snap-align: center;
   background: var(--card); border: 1px solid var(--hairline);
   border-radius: 16px; box-shadow: var(--shadow);
   padding: 12px 14px 11px; position: relative;
@@ -263,6 +275,21 @@ input[type="range"]::-moz-range-thumb {
   vertical-align: middle; margin-right: 4px;
 }
 
+/* ------------------------------------------------------- floating buttons */
+.fabs {
+  position: absolute; right: 14px; bottom: calc(var(--sab) + 20px);
+  display: flex; flex-direction: column; gap: 10px; z-index: 18;
+}
+.fab {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--card); border: 1px solid var(--hairline);
+  box-shadow: var(--shadow); color: var(--ink-soft);
+  display: grid; place-items: center;
+}
+.fab:active { background: var(--hairline-soft); }
+.fab.busy { animation: pulse 1s ease infinite; color: var(--accent); }
+.fab-locate { color: #22648c; }
+
 /* ------------------------------------------------------------------ toast */
 .toast {
   position: absolute; left: 50%; transform: translateX(-50%);
@@ -289,5 +316,4 @@ input[type="range"]::-moz-range-thumb {
 @media (min-width: 768px) {
   .topbar { left: 18px; right: auto; width: 400px; margin: 0; }
   .sheet { max-width: 560px; left: 50%; transform: translateX(-50%); border-radius: 18px 18px 0 0; }
-  .route-card { flex-basis: 46%; }
 }

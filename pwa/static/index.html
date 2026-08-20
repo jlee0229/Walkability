@@ -75,11 +75,30 @@
     <button id="goBtn" class="go-btn">Find routes</button>
   </header>
 
-  <!-- Collapsed trip pill (after a search) -->
+  <!-- Collapsed trip pill (after a search). Origin and destination truncate
+       independently so a long place name can never push the other one out. -->
   <button class="trip-pill" id="tripPill" hidden>
-    <span class="pill-route" id="pillText"></span>
+    <span class="pill-route">
+      <span class="pill-end" id="pillFrom"></span>
+      <span class="pill-arrow" aria-hidden="true">→</span>
+      <span class="pill-end" id="pillTo"></span>
+    </span>
     <span class="pill-edit">Edit</span>
   </button>
+
+  <!-- Floating map controls (locate + fit route) -->
+  <div class="fabs" id="fabs">
+    <button id="fabLocate" class="fab fab-locate" title="Use my location" aria-label="Use my location">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+      </svg>
+    </button>
+    <button id="fabFit" class="fab" title="Fit route" aria-label="Fit the route on screen" hidden>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/>
+      </svg>
+    </button>
+  </div>
 
   <!-- Bottom sheet: route cards -->
   <section class="sheet" id="sheet" hidden>

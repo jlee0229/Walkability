@@ -39,7 +39,8 @@
       goBtn = $("goBtn"), locBtn = $("locBtn"), swapBtn = $("swapBtn"),
       alphaSlider = $("alphaSlider"), alphaWord = $("alphaWord"),
       hint = $("hint"), toastEl = $("toast"), tripPill = $("tripPill"),
-      pillText = $("pillText"), installBtn = $("installBtn");
+      pillFrom = $("pillFrom"), pillTo = $("pillTo"),
+      fabs = $("fabs"), fabFit = $("fabFit"), installBtn = $("installBtn");
 
   // ------------------------------------------------------------ formatting
   function scoreHex(s01) {
@@ -302,6 +303,7 @@
     });
     sheet.hidden = routes.length === 0;
     renderDetail();
+    positionFabs();
   }
 
   function setFocus(i) {
@@ -312,12 +314,14 @@
       el.classList.toggle("focused", j === i);
     });
     renderDetail();
+    positionFabs();
     redrawMap();
   }
 
   function toggleDetail(open) {
     state.detailOpen = open;
     renderDetail();
+    positionFabs();
     fitToFocused(false);
   }
 
@@ -360,6 +364,7 @@
     $("segBtn").addEventListener("click", function () {
       state.segmented = !state.segmented;
       renderDetail();
+      positionFabs();
       redrawMap();
     });
   }
@@ -441,10 +446,20 @@
     document.body.classList.toggle("collapsed", collapsed);
     tripPill.hidden = !collapsed;
     if (collapsed) {
-      var o = (state.origin && state.origin.device) ? MYLOC : fromInput.value.trim();
-      pillText.textContent = o + "  →  " + toInput.value.trim();
+      pillFrom.textContent = (state.origin && state.origin.device) ? MYLOC : fromInput.value.trim();
+      pillTo.textContent = toInput.value.trim();
     }
   }
+
+  // Keep the floating buttons riding just above the sheet (whose height changes
+  // with cards / an open detail drawer), and only offer Fit when there's a route.
+  function positionFabs() {
+    var base = sheet.hidden ? 20 : sheet.offsetHeight + 12;
+    fabs.style.bottom = "calc(var(--sab) + " + base + "px)";
+    fabFit.hidden = state.routes.length === 0;
+  }
+  fabFit.addEventListener("click", function () { fitToFocused(true); });
+  window.addEventListener("resize", positionFabs);
 
   tripPill.addEventListener("click", function () { collapseTopbar(false); });
   goBtn.addEventListener("click", search);
@@ -472,11 +487,14 @@
   });
 
   // ------------------------------------------------------------ geolocation
-  locBtn.addEventListener("click", function () {
+  // Shared by the From-field button and the floating map button. The field
+  // button only recenters when no routes are shown; the map button always
+  // flies to the fix (that's what a locate control on the map means).
+  function requestLocation(btn, alwaysFly) {
     if (!navigator.geolocation) { toast("Location isn't available in this browser."); return; }
-    locBtn.classList.add("busy");
+    btn.classList.add("busy");
     navigator.geolocation.getCurrentPosition(function (pos) {
-      locBtn.classList.remove("busy");
+      btn.classList.remove("busy");
       var lat = pos.coords.latitude, lon = pos.coords.longitude;
       var bbox = state.config && state.config.bbox;
       if (bbox && !(bbox[0] <= lon && lon <= bbox[2] && bbox[1] <= lat && lat <= bbox[3])) {
@@ -489,7 +507,7 @@
       fromInput.value = MYLOC;
       fromInput.classList.add("device-loc");
       redrawMap();
-      if (!state.routes.length && map) {
+      if ((alwaysFly || !state.routes.length) && map) {
         map.flyTo({ center: [lon, lat], zoom: 15, duration: 900 });
       }
       fetch("/api/reverse?lat=" + lat + "&lon=" + lon)
@@ -497,11 +515,13 @@
         .then(function (j) { if (j.label) hint.textContent = "→ near " + j.label; })
         .catch(function () {});
     }, function (err) {
-      locBtn.classList.remove("busy");
+      btn.classList.remove("busy");
       toast(err.code === 1 ? "Location permission was denied — you can type an address instead."
                            : "Couldn't get your location.");
     }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
-  });
+  }
+  locBtn.addEventListener("click", function () { requestLocation(locBtn, false); });
+  $("fabLocate").addEventListener("click", function () { requestLocation($("fabLocate"), true); });
 
   // ------------------------------------------------------------------ boot
   fetch("/api/config").then(function (r) { return r.json(); }).then(function (cfg) {
