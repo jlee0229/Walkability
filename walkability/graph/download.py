@@ -21,6 +21,18 @@ from walkability.graph.inventory import BOSTON_PROFILE, CITY_PROFILES, CityProfi
 ox.settings.cache_folder = str(CACHE_DIR)
 ox.settings.use_cache = True
 
+# Way tags osmnx keeps, extended beyond its defaults. Tags are captured at
+# DOWNLOAD time — a tag absent here never reaches the enriched graph, whatever
+# build.py could do with it (the 2026-08-22 surface-blindness finding: dirt
+# hiking trails scored as paved because `surface` was silently dropped, and
+# foot_access could only ever come from `access` because `foot` was dropped).
+#   surface   → OSM-tier surface_material_score (scoring/weights.SURFACE_SCORES)
+#   foot      → foot_access (build.py; EXCLUDED/RESTRICTED sets in scoring/factors.py)
+#   sac_scale → not scored yet; captured so a hiking-grade gate needs no re-download
+ox.settings.useful_tags_way = list(ox.settings.useful_tags_way) + [
+    "surface", "foot", "sac_scale",
+]
+
 
 def download_walk_graph(profile: CityProfile) -> None:
     print(f"[{profile.name}] Downloading walk graph for: {', '.join(profile.places)}")

@@ -73,6 +73,7 @@ from walkability.scoring.factors import edge_walkability
 from walkability.scoring.weights import (
     SIDEWALK_WIDTH_GOOD_FT,
     SIDEWALK_WIDTH_MIN_FT,
+    surface_tag_score,
 )
 
 # ---------------------------------------------------------------------------
@@ -710,12 +711,17 @@ def _build_canonical_schema(
     """
     resolved    = resolve_edge_tags(raw_data)
     foot_access = resolved.get("foot") or resolved.get("access")
+    # OSM surface tag → material score (None when untagged/unrecognised). The
+    # tag only exists on graphs downloaded with the extended useful_tags_way
+    # (graph/download.py, 2026-08-22) — older base graphs yield None everywhere.
+    osm_material = surface_tag_score(resolved.get("surface"))
 
     # --- Start from fallback values ---
     highway_score          = fallback.highway_score
     highway_confidence     = fallback.highway_confidence
-    surface_score          = fallback.surface_score      # structural condition
-    surface_material_score = fallback.surface_score      # intrinsic comfort; mirrors condition when OSM surface tag is the only source
+    surface_score          = fallback.surface_score      # structural condition (class prior)
+    surface_material_score = (osm_material if osm_material is not None
+                              else fallback.surface_score)  # tagged material beats the class mirror
     surface_confidence     = None
     data_source            = fallback.inferred_from[0] if fallback.inferred_from else "fallback"
 
@@ -758,7 +764,10 @@ def _build_canonical_schema(
         if city_surf_score is not None:
             surface_material_score = city_surf_score  # material → intrinsic comfort
         else:
-            surface_material_score = None             # unknown material — don't fabricate
+            # City material unknown: the OSM surface tag (real data, not a class
+            # default) may still fill it; None when both are unknown — never
+            # fabricate a material.
+            surface_material_score = osm_material
 
         sidewalk_condition   = str(raw_cond) if raw_cond is not None else None
         try:
@@ -768,7 +777,14 @@ def _build_canonical_schema(
         sidewalk_survey_date = str(pd.to_datetime(raw_date).date()) if raw_date is not None else None
 
     # --- Lever 3: unpaved recreational-path comfort lift (no city data) ---
+    # Gated on the surface tag being UNKNOWN: the lever's rationale is "don't
+    # dock a greenway merely for lacking a paved-surface tag". A tagged surface
+    # speaks for itself — asphalt scores high on its own, and a tagged dirt
+    # hiking trail must NOT be lifted back to 0.9 (the 2026-08-22 Stephenson
+    # Preserve / Barton Creek finding: the model's top Austin routes were bare
+    # dirt trails scored as paved).
     if (data_source != "city_inventory" and fallback.is_pedestrian_dedicated and env
+            and osm_material is None
             and max(env.get("openness_score") or 0.0,
                     env.get("road_separation") or 0.0) >= PED_PATH_RECREATIONAL_MIN):
         surface_score          = max(surface_score or 0.0, PED_PATH_COMFORT)

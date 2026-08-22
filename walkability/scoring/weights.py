@@ -56,11 +56,18 @@ SURFACE_SCORES: dict[str, float] = {
     "concrete":      0.90,
     "paved":         0.80,  # Generic paved (unspecified material)
     "paving_stones": 0.70,
+    "wood":          0.60,  # Boardwalks — even underfoot, walkable by design
+    "sett":          0.55,  # Flat-topped worked stone (smoother than cobbles)
     "compacted":     0.55,
+    "cobblestone":   0.40,  # Rounded/uneven stone
     "fine_gravel":   0.40,
     "gravel":        0.30,
+    "woodchips":     0.25,
+    "pebblestone":   0.25,
     "unpaved":       0.20,
+    "ground":        0.18,  # Bare-earth trail — the default hiking-trail tag
     "dirt":          0.15,
+    "earth":         0.15,  # OSM alias of dirt
     "grass":         0.10,
     "sand":          0.05,
     "mud":           0.00,
@@ -70,6 +77,22 @@ SURFACE_SCORES: dict[str, float] = {
 SURFACE_PRIORITY: list[str] = sorted(
     SURFACE_SCORES, key=SURFACE_SCORES.__getitem__, reverse=True
 )
+
+
+def surface_tag_score(surface: str | None) -> float | None:
+    """Score for a resolved OSM ``surface`` tag value; None when unknown.
+
+    OSM subtags materials as ``material:variant`` (``concrete:plates``,
+    ``paving_stones:30``) — an unlisted variant falls back to its base
+    material's score. None (not 0.0) for missing/unrecognised values so the
+    factor drops out downstream instead of penalising the edge.
+    """
+    if not surface:
+        return None
+    score = SURFACE_SCORES.get(surface)
+    if score is None and ":" in surface:
+        score = SURFACE_SCORES.get(surface.split(":", 1)[0])
+    return score
 
 # ---------------------------------------------------------------------------
 # Highway distinctiveness scores

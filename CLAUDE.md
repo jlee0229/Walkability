@@ -54,9 +54,18 @@ border edges lose their safety factor) and the per-city sidewalk inventory.
 Four tiers, first hit wins, recorded in `data_source`:
 1. `city_inventory` — spatial join within 10 m → `surface_score` (condition),
    `surface_material_score` (material). Boston ~78%, Austin ~62%.
-2. `highway=<type>` — OSM tag via `HIGHWAY_SCORES`.
+2. `highway=<type>` — OSM tag via `HIGHWAY_SCORES`. A tagged `surface` sets
+   `surface_material_score` (`weights.surface_tag_score`; `material:variant`
+   falls back to base material); it also fills material when tier 1 matched but
+   city material is unknown. Lever 3 (greenway comfort lift) fires **only** when
+   surface is untagged — a tagged dirt trail must stay dirt.
 3. `context:...` — bearing-weighted BFS over tagged neighbours (<1%).
 4. `no_tag` — geometric fallback (rare).
+
+**Tags are captured at download:** `graph/download.py` extends
+`ox.settings.useful_tags_way` (+`surface`, `foot`, `sac_scale`, 2026-08-22).
+Base graphs downloaded earlier carry none of these — `foot_access` then derives
+from `access` only and every surface is the class default. Re-download to fix.
 
 Per-factor scores/confidences (`highway_score`, `surface_score`,
 `surface_material_score`, …) are **never pre-combined** — routing re-weights them.
@@ -71,7 +80,8 @@ The pipeline bakes a composite `walk_score`/`walk_confidence` at the **default**
   list. `osm/tag_resolver.py::resolve_edge_tags()` runs in `build_edge_schema()`;
   never pass raw edge data to `get_fallback()`.
 - **Two surface fields, never merged:** `surface_score` = structural condition;
-  `surface_material_score` = intrinsic material comfort (`None` for OT/unknown).
+  `surface_material_score` = intrinsic material comfort (`None` for OT/unknown;
+  the OSM `surface` tag fills it when the city material is unknown).
   `sidewalk_condition` stores the raw (aggregated) condition value for audit.
 - **Both-sides aggregation** (`build.py::_aggregate_city_candidates`): a
   centerline edge matches both sidewalks → area/length-weighted mean for
