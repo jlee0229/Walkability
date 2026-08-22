@@ -262,6 +262,13 @@ def _is_arterial(highway) -> bool:
     return any(c in ARTERIAL_REACH_M for c in _base_classes(highway))
 
 
+def _is_bridge(bridge) -> bool:
+    """True if the edge carries a truthy OSM ``bridge`` tag (str or list)."""
+    vals = bridge if isinstance(bridge, (list, tuple)) else [bridge]
+    return any(isinstance(v, str) and v.lower() not in ("", "no", "none")
+               for v in vals)
+
+
 def on_path_safety(highway, maxspeed, defaults: dict = DEFAULT_MAXSPEED_MPH,
                    imputed_speed: float | None = None) -> float:
     """Car-safety of the road you walk ALONG: 1.0 on a protected path, else from speed.
@@ -399,7 +406,7 @@ def build_environment_index(
     edges_gdf["edge_id"] = list(zip(edges_gdf["u"], edges_gdf["v"], edges_gdf["key"]))
 
     keep = ["edge_id", "geometry", "highway"]
-    for opt in ("service", "maxspeed"):
+    for opt in ("service", "maxspeed", "bridge"):
         if opt in edges_gdf.columns:
             keep.append(opt)
     edges_metric = edges_gdf[keep].to_crs(profile.metric_crs)
@@ -433,6 +440,19 @@ def build_environment_index(
 
     n = len(edges_metric)
     off_scores  = _arterial_scores(edges_metric, arterials, profile.maxspeed_defaults)  # off-path
+    # Grade-separation waiver: walker edges tagged bridge=yes re-score off-path
+    # against only the arterials that do NOT cross them (the crossed road passes
+    # beneath the deck). See _bridge_offpath_scores.
+    if not arterials.empty and "bridge" in edges_metric.columns:
+        bridge_walkers = edges_metric[
+            edges_metric["bridge"].map(_is_bridge)
+            & ~edges_metric["highway"].map(_is_arterial)]
+        if not bridge_walkers.empty:
+            bridge_off = _bridge_offpath_scores(
+                bridge_walkers, _arterial_threat_frame(arterials, profile.maxspeed_defaults))
+            off_scores.update(bridge_off)
+            print(f"  Bridge grade-separation waiver: re-scored off-path for "
+                  f"{len(bridge_off)} bridge walker edges")
     on_impute   = _on_path_imputed_speeds(edges_metric, arterials)  # untagged arterial on-path
     poi_weight  = _buffer_sum(edges_metric, pois, EYES_BUFFER_M, weight_col="weight")
     bldg_counts = _buffer_sum(edges_metric, buildings, EYES_BUFFER_M)
@@ -756,17 +776,13 @@ def impute_arterial_speeds(
     return speeds
 
 
-def _arterial_scores(
-    edges_metric: gpd.GeoDataFrame,
-    arterials:    gpd.GeoDataFrame,
-    defaults:     dict = DEFAULT_MAXSPEED_MPH,
-) -> dict[tuple, float]:
-    """Per-edge OFF-PATH safety (1 − nearest-arterial hostility·falloff) via one join.
-
-    ``defaults`` is the per-city fallback speed table for untagged arterials."""
-    if arterials.empty:
-        return {}
-
+def _arterial_threat_frame(
+    arterials: gpd.GeoDataFrame,
+    defaults:  dict = DEFAULT_MAXSPEED_MPH,
+) -> gpd.GeoDataFrame:
+    """Arterials annotated with off-path ``reach`` (class-based) + ``hostility``
+    (speed-based) — the threat model shared by the bulk nearest-join and the
+    per-edge bridge recompute."""
     art = arterials.copy()
     bases = art["highway"].map(lambda h: (_base_classes(h) or ["secondary"])[0])
     # Resolve each arterial's speed: its real maxspeed tag if present, else the
@@ -780,6 +796,21 @@ def _arterial_scores(
               else impute_arterial_speeds(art, defaults))
     art["reach"]     = [ARTERIAL_REACH_M.get(b, _DEFAULT_REACH_M) for b in bases]
     art["hostility"] = [_arterial_hostility(s) for s in speeds]
+    return art
+
+
+def _arterial_scores(
+    edges_metric: gpd.GeoDataFrame,
+    arterials:    gpd.GeoDataFrame,
+    defaults:     dict = DEFAULT_MAXSPEED_MPH,
+) -> dict[tuple, float]:
+    """Per-edge OFF-PATH safety (1 − nearest-arterial hostility·falloff) via one join.
+
+    ``defaults`` is the per-city fallback speed table for untagged arterials."""
+    if arterials.empty:
+        return {}
+
+    art = _arterial_threat_frame(arterials, defaults)
     joined = gpd.sjoin_nearest(
         edges_metric[["edge_id", "geometry"]],
         art[["geometry", "reach", "hostility"]],
@@ -797,6 +828,59 @@ def _arterial_scores(
             scores[eid] = 1.0
         else:
             scores[eid] = off_path_safety(float(dist), float(reach), float(hostility))
+    return scores
+
+
+def _bridge_offpath_scores(
+    bridge_edges: gpd.GeoDataFrame,
+    art:          gpd.GeoDataFrame,
+) -> dict[tuple, float]:
+    """Grade-separation waiver: off-path safety for walker edges tagged
+    ``bridge=yes``, counting only ELEVATED arterials as threats.
+
+    A walker on a bridge deck is separated from every AT-GRADE road nearby —
+    the freeway passing beneath imposes no street-level hostility (the dual of
+    ``_drop_underground``, which removes tunneled roads under a footway). So
+    only arterials that are themselves elevated — ``layer > 0``, or a truthy
+    ``bridge`` tag where the layer carries one — keep penalising: that is the
+    roadway of the SAME structure (the sidewalk-on-a-road-bridge case, where you
+    really do walk beside those cars) or an adjacent flyover.
+
+    NB: a geometry heuristic ("exclude arterials that cross the deck") was tried
+    first and failed — a freeway corridor is many parallel line features
+    (mainlanes each way, ramps, frontage), and the deck only intersects some of
+    them; the un-crossed carriageway ~15 m away still cratered the score. Grade
+    tags are the honest signal. Limitation: a companion roadway tagged
+    ``bridge=yes`` but with no ``layer`` is only caught once the arterials layer
+    carries the ``bridge`` column (download_environment.py now keeps it; older
+    caches fall back to ``layer`` alone, bounded by CAR_SAFETY_CEIL anyway).
+    Grounded on the Southern Walnut Creek Trail ped bridge over US-183 (Austin
+    blind-pass card 4): off-path was 0.70/0.05 on the deck as if at grade.
+
+    ``art`` is the ``_arterial_threat_frame`` output. Bridge edges are rare
+    (~0.6% in Austin), so a per-edge candidate scan is cheap."""
+    scores: dict[tuple, float] = {}
+    if bridge_edges.empty:
+        return scores
+    elevated = pd.Series(False, index=art.index)
+    if "layer" in art.columns:
+        elevated |= pd.to_numeric(art["layer"], errors="coerce") > 0
+    if "bridge" in art.columns:
+        elevated |= art["bridge"].map(_is_bridge)
+    art = art[elevated]
+    if art.empty:                       # no elevated arterials in reach of anything
+        return {row.edge_id: 1.0 for row in bridge_edges.itertuples()}
+    sindex = art.sindex
+    max_reach = float(art["reach"].max())
+    for row in bridge_edges.itertuples():
+        geom = row.geometry
+        best = 1.0
+        for i in sindex.query(geom.buffer(max_reach)):
+            a = art.iloc[i]
+            best = min(best, off_path_safety(
+                float(a.geometry.distance(geom)),
+                float(a.reach), float(a.hostility)))
+        scores[row.edge_id] = best
     return scores
 
 

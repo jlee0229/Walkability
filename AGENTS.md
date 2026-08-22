@@ -114,7 +114,11 @@ count. `confidence` is a plain arithmetic mean (tiebreaker only).
 - `car_safety = min(graded_ceiling, on_path, off_path) × industrial_penalty`.
   *on_path* from own `maxspeed` (crash-risk curve, class default when missing);
   *off_path* proximity to a nearby fast road (non-arterials only; tunneled roads
-  dropped via `_drop_underground`); *graded_ceiling* rises above `CAR_SAFETY_CEIL`
+  dropped via `_drop_underground`; walker edges tagged `bridge=yes` re-score
+  against ELEVATED arterials only (`layer>0`/`bridge` — `_bridge_offpath_scores`):
+  a deck is separated from every at-grade road below, while the same structure's
+  roadway (sidewalk on a road bridge) still penalises); *graded_ceiling* rises
+  above `CAR_SAFETY_CEIL`
   (0.85) with `road_separation` (all-roads layer); *industrial_penalty* from
   `landuse=industrial` proximity.
 - `perceived_safety` (`eyes_score`) = noisy-OR of activity (POIs), enclosure
