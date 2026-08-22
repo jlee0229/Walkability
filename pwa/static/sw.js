@@ -6,7 +6,7 @@
  * the network — intercepting range requests corrupts tile reads).
  * Bump VERSION on any shell change to invalidate old caches.
  */
-var VERSION = "humanpath-pwa-v4";
+var VERSION = "humanpath-pwa-v5";
 var SHELL = [
   "./",
   "./index.html",

@@ -419,11 +419,15 @@
     }).catch(function () { return fallback; });
   }
 
+  function areaParam() {
+    return state.config ? "&area=" + encodeURIComponent(state.config.id) : "";
+  }
+
   function resolveEndpoint(input, cached) {
     var q = input.value.trim();
     if (cached && cached.device && q === MYLOC) return Promise.resolve(cached);
     if (!q) return Promise.reject("Enter both a start and a destination.");
-    return fetch("/api/geocode?q=" + encodeURIComponent(q)).then(function (resp) {
+    return fetch("/api/geocode?q=" + encodeURIComponent(q) + areaParam()).then(function (resp) {
       if (!resp.ok) return apiError(resp, "Couldn't find “" + q + "”.").then(Promise.reject.bind(Promise));
       return resp.json();
     });
@@ -441,7 +445,7 @@
       var alpha = (alphaSlider.value / 100) * (state.config ? state.config.alpha_max : 5);
       var qs = "olat=" + ends[0].lat + "&olon=" + ends[0].lon +
                "&dlat=" + ends[1].lat + "&dlon=" + ends[1].lon +
-               "&alpha=" + alpha.toFixed(2);
+               "&alpha=" + alpha.toFixed(2) + areaParam();
       return fetch("/api/route?" + qs).then(function (resp) {
         if (!resp.ok) return apiError(resp, "Routing failed.").then(Promise.reject.bind(Promise));
         return resp.json();
@@ -580,9 +584,44 @@
   $("fabLocate").addEventListener("click", function () { requestLocation($("fabLocate"), true); });
 
   // ------------------------------------------------------------------ boot
-  fetch("/api/config").then(function (r) { return r.json(); }).then(function (cfg) {
+  // The active city comes from ?area= (a picker switch), else the last choice
+  // (localStorage — survives standalone PWA launches, whose start_url has no
+  // query), else the server default. A stale saved id falls back to default.
+  var AREA_KEY = "hp-area";
+
+  function loadConfig(areaId) {
+    var url = "/api/config" + (areaId ? "?area=" + encodeURIComponent(areaId) : "");
+    return fetch(url).then(function (r) {
+      if (!r.ok) {
+        if (areaId) return loadConfig("");
+        throw new Error("config " + r.status);
+      }
+      return r.json();
+    });
+  }
+
+  var _initialArea = null;
+  try {
+    _initialArea = new URLSearchParams(location.search).get("area") ||
+                   localStorage.getItem(AREA_KEY);
+  } catch (e) {}
+
+  loadConfig(_initialArea).then(function (cfg) {
     state.config = cfg;
-    $("areaLabel").textContent = cfg.label;
+    try { localStorage.setItem(AREA_KEY, cfg.id); } catch (e) {}
+    var sel = $("areaSelect");
+    sel.innerHTML = "";
+    (cfg.areas || [{ id: cfg.id, label: cfg.label }]).forEach(function (a) {
+      var o = document.createElement("option");
+      o.value = a.id;
+      o.textContent = a.label;
+      sel.appendChild(o);
+    });
+    sel.value = cfg.id;
+    sel.addEventListener("change", function () {
+      try { localStorage.setItem(AREA_KEY, sel.value); } catch (e) {}
+      location.search = "?area=" + encodeURIComponent(sel.value);  // clean reboot into the city
+    });
     fromInput.placeholder = "From — e.g. " + cfg.default_from;
     toInput.placeholder = "To — e.g. " + cfg.default_to;
     initMap(cfg);

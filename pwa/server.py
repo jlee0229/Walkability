@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from walkability.graph.build import ENRICHED_PATH
 from walkability.graph.compact import load_runtime, runtime_path
 from walkability.graph.csr import RoutingGraph, csr_path, load_csr
+from walkability.graph.inventory import CITY_PROFILES
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
@@ -63,6 +64,16 @@ AREAS: dict[str, dict] = {
         "style": {"type": "pmtiles",
                   "url": "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston_metro.pmtiles"},
         "graph": ENRICHED_PATH,
+    },
+    "austin": {
+        "label": "Austin, TX",
+        "bbox": (-97.98, 30.08, -97.55, 30.55),
+        "bias": (30.27, -97.74),
+        "covered": "Austin, TX",
+        "from": "Texas State Capitol",
+        "to": "Zilker Park",
+        "style": {"type": "url", "url": "https://tiles.openfreemap.org/styles/positron"},
+        "graph": CITY_PROFILES["austin"].enriched_path,
     },
 }
 
@@ -284,7 +295,10 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 @app.on_event("startup")
 def _startup():
-    get_graph(DEFAULT_AREA)
+    # Warm every city at boot (CSR graphs are ~80-200 MB RAM each) so the
+    # first search after a city switch is as snappy as the rest.
+    for area_id in AREAS:
+        get_graph(area_id)
 
 
 @app.get("/healthz")

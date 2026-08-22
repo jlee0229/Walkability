@@ -60,10 +60,17 @@ body.collapsed .topbar {
   font-family: var(--serif); font-weight: 600; font-size: 18px;
   letter-spacing: 0.01em;
 }
-.brand-sub {
+/* City picker, styled as the small mono area label with a chevron hint. */
+.area-select {
+  appearance: none; -webkit-appearance: none;
   font-family: var(--mono); font-size: 10px; color: var(--ink-faint);
   text-transform: uppercase; letter-spacing: 0.12em; margin-top: 3px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  border: 0; background-color: transparent; cursor: pointer;
+  min-width: 0; max-width: 132px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 2px 13px 2px 0;
+  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6' viewBox='0 0 9 6'%3E%3Cpath d='M1 1l3.5 3.5L8 1' fill='none' stroke='%23a8a08c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 1px center;
 }
 .sample-chip {
   margin-left: auto; flex: 0 0 auto; white-space: nowrap;
