@@ -17,6 +17,7 @@ set -euo pipefail
 EXCLUDE=(
   "Research/walkability_day3_summary.docx"
   "archive/notebooks/boston_overlayed_pedestrian.png"
+  "archive/Research/scenic-routing-mcp-main.zip"
 )
 
 START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
