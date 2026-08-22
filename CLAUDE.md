@@ -267,11 +267,22 @@ full-height map. Load-bearing behaviours (don't regress):
 
 ### Status notes
 
+- **Deployment (2026-08-22): the live site IS the PWA.** The HF Docker Space
+  (`jlee0229/Humanpath`, free grandfathered tier — NEW Docker Spaces are paywalled)
+  serves `pwa/server.py` (FastAPI + CSR graphs, Boston & Austin warmed at boot) +
+  the installable frontend in `pwa/static/` — root `Dockerfile`, `app_port` 8501,
+  redeploy with `./deploy-hf.sh` from `main` (its `EXCLUDE` list strips binaries
+  HF's pre-receive hook rejects — extend it if the push is rejected). The
+  **Streamlit app is local-dev only** now (`streamlit run app/streamlit_app.py`);
+  `deploy-hf-pwa.sh` (standalone PWA Space) is parked — unusable until HF Docker
+  paywall changes. Graph pickles ship via the `data-v1` Release: after any rebuild,
+  regenerate runtime **then** csr pickles and `gh release upload data-v1 --clobber`
+  them, then redeploy the Space (it downloads at boot).
 - **RAM: Phase 1 (runtime pickle) + Phase 2 (CSR substrate) DONE.** Enriched GraphML
   (~2.7 GB/17 s) → runtime `MultiDiGraph` (0.45 GB/0.5 s) → CSR `RoutingGraph`
   (`graph/csr.py`, Austin ~78 MB/0.026 s). CSR router (`csr_router.py`) is faster
   than Nx and shares all pure logic via the `CsrEdge` flyweight; Nx path untouched.
-  **Owed:** upload `*.csr.pkl` to the `data-v1` Release + live smoke test.
+  csr/runtime pickles for both cities uploaded to `data-v1` 2026-08-22, live-tested.
 - **Owed for a polished Austin:** a brand-tinted Austin PMTiles cut (currently
   OpenFreeMap).
 - **Removed factors** (`crossing_quality`, `poi_density`, `elevation_change`) — re-add
