@@ -20,6 +20,7 @@ REMOTE="${HF_PWA_REMOTE:-hf-pwa}"
 EXCLUDE=(
   "Research/walkability_day3_summary.docx"
   "archive/notebooks/boston_overlayed_pedestrian.png"
+  "archive/Research/scenic-routing-mcp-main.zip"
 )
 
 if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
