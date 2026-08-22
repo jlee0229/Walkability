@@ -64,13 +64,29 @@
          : v < 58 ? "Balanced" : v < 82 ? "Lean walkable" : "Best walk";
   }
 
-  var toastTimer = null;
-  function toast(msg, ms) {
-    toastEl.textContent = msg;
+  // toast(msg, opts): opts.kind "info" = muted notice dot (default is the
+  // terracotta problem dot); opts.action {label, fn} shows a tappable trailing
+  // label and makes the toast sticky until acted on; opts.ms overrides the
+  // auto-hide delay.
+  var toastTimer = null, toastAction = null;
+  function toast(msg, opts) {
+    opts = opts || {};
+    $("toastText").textContent = msg;
+    toastEl.className = "toast" + (opts.kind === "info" ? " toast-info" : "");
+    toastAction = opts.action || null;
+    var act = $("toastAction");
+    act.hidden = !toastAction;
+    if (toastAction) act.textContent = toastAction.label;
     toastEl.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { toastEl.hidden = true; }, ms || 4200);
+    if (!toastAction) {
+      toastTimer = setTimeout(function () { toastEl.hidden = true; }, opts.ms || 4200);
+    }
   }
+  toastEl.addEventListener("click", function () {
+    if (toastAction) toastAction.fn();
+    else toastEl.hidden = true;
+  });
 
   // ------------------------------------------------------------------- map
   var map = null, styleLoaded = false, pendingFC = null;
@@ -103,7 +119,7 @@
   }
 
   function initMap(cfg) {
-    if (typeof maplibregl === "undefined") { toast("Map failed to load."); return; }
+    if (typeof maplibregl === "undefined") { toast("The map failed to load. Refresh to try again."); return; }
     if (maplibregl.addProtocol && typeof pmtiles !== "undefined") {
       try { maplibregl.addProtocol("pmtiles", new pmtiles.Protocol().tile); } catch (e) {}
     }
@@ -133,7 +149,8 @@
       addRouteLayers();
       if (pendingFC) { setMapData(pendingFC[0], pendingFC[1]); pendingFC = null; }
     });
-    window.__hpMap = map;  // debug handle
+    window.__hpMap = map;      // debug handles
+    window.__hpToast = toast;
   }
 
   function addRouteLayers() {
@@ -470,7 +487,8 @@
       // Let the sheet lay out first so the camera padding sees its real height.
       requestAnimationFrame(function () { fitToFocused(true); });
     }).catch(function (err) {
-      toast(typeof err === "string" ? err : (err && err.message) || "Something went wrong.");
+      toast(typeof err === "string" ? err
+            : (err && err.message) || "Something went wrong. Please try again.");
     }).finally(function () {
       goBtn.disabled = false;
       goBtn.textContent = "Find routes";
@@ -558,7 +576,7 @@
       var lat = pos.coords.latitude, lon = pos.coords.longitude;
       var bbox = state.config && state.config.bbox;
       if (bbox && !(bbox[0] <= lon && lon <= bbox[2] && bbox[1] <= lat && lat <= bbox[3])) {
-        toast("You look outside the covered area — Humanpath currently covers " +
+        toast("It looks like you're outside the covered area. Humanpath currently covers " +
               (state.config.covered || "metro Boston") + ".");
         return;
       }
@@ -576,8 +594,9 @@
         .catch(function () {});
     }, function (err) {
       btn.classList.remove("busy");
-      toast(err.code === 1 ? "Location permission was denied — you can type an address instead."
-                           : "Couldn't get your location.");
+      toast(err.code === 1
+        ? "Location access is off for this site. Type an address instead, or allow location in your browser settings."
+        : "Couldn't get your location. Try again in a moment.");
     }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
   }
   locBtn.addEventListener("click", function () { requestLocation(locBtn, false); });
@@ -626,13 +645,32 @@
     toInput.placeholder = "To — e.g. " + cfg.default_to;
     initMap(cfg);
   }).catch(function () {
-    toast("Couldn't reach the Humanpath server.");
+    toast("Can't reach the Humanpath server. Check your connection and try again.");
   });
 
-  // PWA: service worker + install prompt.
+  // PWA: service worker + update flow. When a NEW worker finishes installing
+  // while an old one controls the page, a fresh version of the app shell is
+  // ready — offer it as a one-tap refresh instead of waiting for the next
+  // launch to pick it up.
+  function offerUpdate() {
+    toast("A new version is ready.", {
+      kind: "info",
+      action: { label: "Refresh", fn: function () { location.reload(); } },
+    });
+  }
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("./sw.js").catch(function () {});
+      navigator.serviceWorker.register("./sw.js").then(function (reg) {
+        function track(sw) {
+          if (!sw) return;
+          sw.addEventListener("statechange", function () {
+            if (sw.state === "installed" && navigator.serviceWorker.controller) offerUpdate();
+          });
+        }
+        if (reg.waiting && navigator.serviceWorker.controller) offerUpdate();
+        track(reg.installing);
+        reg.addEventListener("updatefound", function () { track(reg.installing); });
+      }).catch(function () {});
     });
   }
   var deferredPrompt = null;
@@ -658,7 +696,8 @@
   if (isIOS && !standalone && !localStorage.getItem("hp-ios-hint")) {
     localStorage.setItem("hp-ios-hint", "1");
     setTimeout(function () {
-      toast("Tip: install Humanpath — tap Share, then “Add to Home Screen”.", 7000);
+      toast("Install this app: tap Share, then “Add to Home Screen”.",
+            { kind: "info", ms: 7000 });
     }, 2500);
   }
 })();

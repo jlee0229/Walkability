@@ -119,7 +119,11 @@
     </div>
   </section>
 
-  <div class="toast" id="toast" hidden></div>
+  <div class="toast" id="toast" hidden>
+    <span class="toast-dot" aria-hidden="true"></span>
+    <span class="toast-text" id="toastText"></span>
+    <span class="toast-action" id="toastAction" hidden></span>
+  </div>
 
   <script>
     // Hidden-tab rAF fallback: some embedded webviews/preview panes report the

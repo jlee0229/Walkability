@@ -342,15 +342,34 @@ input[type="range"]::-moz-range-thumb {
 .fab.busy { animation: pulse 1s ease infinite; color: var(--accent); }
 .fab-locate { color: #22648c; }
 
-/* ------------------------------------------------------------------ toast */
+/* ------------------------------------------------------------------ toast
+   One message surface, two tones: a terracotta dot for problems, a muted dot
+   for notices. Card styling matches the rest of the app instead of the old
+   dark pill; an optional trailing action ("Refresh") makes it tappable. */
+.toast[hidden] { display: none; }
 .toast {
-  position: absolute; left: 50%; transform: translateX(-50%);
+  /* left/right:0 + auto margins centre it while letting shrink-to-fit see the
+     FULL viewport (left:50% capped the box at half-width and wrapped text). */
+  position: absolute; left: 0; right: 0; margin: 0 auto; width: fit-content;
   bottom: calc(var(--sab) + 24px); z-index: 40;
-  max-width: 88vw;
-  background: var(--ink); color: var(--card);
+  max-width: min(88vw, 420px);
+  display: flex; align-items: center; gap: 9px;
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--hairline);
   font-size: 13px; line-height: 1.45;
-  border-radius: 12px; padding: 11px 16px;
+  border-radius: 12px; padding: 11px 15px;
   box-shadow: var(--shadow);
+}
+.toast .toast-dot {
+  flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent);
+}
+.toast.toast-info .toast-dot { background: var(--ink-faint); }
+.toast .toast-text { min-width: 0; }
+.toast .toast-action {
+  flex: 0 0 auto; margin-left: 4px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
 }
 
 /* map popup (brand tooltip, same as the desktop component) */
