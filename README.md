@@ -6,7 +6,7 @@ colorTo: yellow
 sdk: docker
 app_port: 8501
 pinned: false
-short_description: Walkability-aware walking routes for Boston
+short_description: Walkability-aware walking routes — Boston & Austin
 thumbnail: https://raw.githubusercontent.com/jlee0229/Walkability/main/app/humanpath_icon.png
 ---
 
