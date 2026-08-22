@@ -92,8 +92,11 @@ def download_arterials(profile: CityProfile, force: bool = False) -> None:
     # layer so load_arterials can drop UNDERGROUND segments — Boston's Big Dig
     # buries I-90/I-93 under fine surface footways, and a tunneled road imposes no
     # street-level pedestrian hostility. Flatten list/NaN to str so GPKG serialises.
+    # Keep bridge too: the dual grade case — a walker edge on a bridge deck is
+    # separated from every AT-GRADE arterial, so _bridge_offpath_scores keeps only
+    # ELEVATED arterials (layer>0 / bridge truthy) penalising bridge walker edges.
     cols = ["geometry", "highway"]
-    for c in ("maxspeed", "tunnel", "layer"):
+    for c in ("maxspeed", "tunnel", "layer", "bridge"):
         if c in gdf.columns:
             gdf[c] = _flatten(gdf[c])
             cols.append(c)

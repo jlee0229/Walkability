@@ -1,19 +1,16 @@
 route_name,area,ideal_score,confidence,tier,notes,model_score,model_safety,model_comfort,model_path,model_len_m
-walkability_anchors:high#1,walkability_anchors · high#1,,,,,93,0.99,0.85,0.91,595
-walkability_anchors:high#0,walkability_anchors · high#0,,,,,93,0.98,0.85,0.91,542
-walkability_anchors:high#2,walkability_anchors · high#2,,,,,91,0.94,0.85,0.91,1286
-walkability_anchors:high#3,walkability_anchors · high#3,,,,,88,0.88,0.85,0.9,376
-data_seam_straddling:seam#2,data_seam_straddling · seam#2,,,,,84,0.84,0.77,0.9,6484
-data_seam_straddling:seam#5,data_seam_straddling · seam#5,,,,,79,0.87,0.83,0.78,6989
-over_water_crossing:water#1,over_water_crossing · water#1,,,,,78,0.77,0.85,0.9,2499
-over_water_crossing:water#0,over_water_crossing · water#0,,,,,78,0.76,0.85,0.9,2831
-walkability_anchors:low#1,walkability_anchors · low#1,,,,,74,0.63,0.75,0.9,393
-walkability_anchors:low#2,walkability_anchors · low#2,,,,,74,0.63,0.76,0.9,407
-walkability_anchors:low#0,walkability_anchors · low#0,,,,,74,0.63,0.76,0.9,415
-data_seam_straddling:seam#4,data_seam_straddling · seam#4,,,,,67,0.73,0.83,0.9,4349
-over_water_crossing:water#3,over_water_crossing · water#3,,,,,65,0.74,0.81,0.85,2681
-over_water_crossing:water#4,over_water_crossing · water#4,,,,,63,0.69,0.82,0.88,3634
-data_seam_straddling:seam#3,data_seam_straddling · seam#3,,,,,63,0.75,0.81,0.87,6106
-over_water_crossing:water#2,over_water_crossing · water#2,,,,,59,0.72,0.82,0.87,2466
-data_seam_straddling:seam#1,data_seam_straddling · seam#1,,,,,44,0.5,0.71,0.64,8795
-data_seam_straddling:seam#0,data_seam_straddling · seam#0,,,,,43,0.65,0.79,0.9,2806
+spread_5294_-8884,"city sample (42.3541, -71.0651)",,,,,90,0.93,0.85,0.9,753
+spread_5294_-8897,"city sample (42.3525, -71.1702)",,,,,85,0.84,0.82,0.89,1018
+spread_5291_-8895,"city sample (42.3310, -71.1520)",,,,,83,0.81,0.76,0.89,523
+spread_5290_-8890,"city sample (42.3242, -71.1146)",,,,,78,0.88,0.68,0.73,943
+spread_5278_-8892,"city sample (42.2316, -71.1328)",,,,,67,0.67,0.67,0.68,1376
+spread_5301_-8882,"city sample (42.4145, -71.0488)",,,,,63,0.79,0.55,0.51,723
+spread_5287_-8888,"city sample (42.2978, -71.0976)",,,,,57,0.92,0.56,0.32,1151
+spread_5300_-8892,"city sample (42.4065, -71.1329)",,,,,50,0.74,0.52,0.3,412
+spread_5287_-8896,"city sample (42.2986, -71.1676)",,,,,49,0.68,0.56,0.29,694
+spread_5298_-8878,"city sample (42.3875, -71.0178)",,,,,39,0.32,0.82,0.9,555
+spread_5294_-8893,"city sample (42.3582, -71.1368)",,,,,32,0.37,0.82,0.84,674
+spread_5283_-8893,"city sample (42.2688, -71.1361)",,,,,28,0.16,0.57,0.39,763
+spread_5287_-8881,"city sample (42.2999, -71.0439)",,,,,26,0.41,0.61,0.39,1084
+spread_5291_-8883,"city sample (42.3287, -71.0608)",,,,,18,0.48,0.77,0.85,438
+spread_5298_-8885,"city sample (42.3880, -71.0783)",,,,,14,0.29,0.6,0.53,954

@@ -27,6 +27,9 @@ the change with no further edits.
 HIGHWAY_SCORES: dict[str, float] = {
     "pedestrian":    1.00,  # Fully pedestrianised street/plaza
     "footway":       0.90,  # Dedicated foot path
+    "cycleway":      0.85,  # Shared-use trail (Austin custom_filter keeps these;
+                            # 2026-08-22 — was MISSING, so every trail fell to the
+                            # context/geometric fallback and scored ~0.08–0.40)
     "path":          0.80,  # Generic path (often shared use)
     "living_street": 0.70,  # Shared surface, very low vehicle speeds
     "residential":   0.65,  # Local residential street (calibration: 25 mph / 1–2 lanes,
@@ -120,6 +123,7 @@ HIGHWAY_DISTINCTIVENESS: dict[str, float] = {
     "service":       0.40,  # Ambiguous (could be many things)
     "pedestrian":    0.35,  # Not used as evidence, included for completeness
     "footway":       0.35,  # Not used as evidence, included for completeness
+    "cycleway":      0.45,  # A trail nearby is a fairly specific signal
     "path":          0.30,  # Not used as evidence, included for completeness
     "unclassified":  0.15,  # By definition generic; very weak signal
     "residential":   0.20,  # Extremely common; weak signal
@@ -302,7 +306,8 @@ ARTERIAL_IMPUTE_MAX_M: float = 3000.0
 
 # Pedestrian-dedicated ways carry no through traffic → on-path safety 1.0.
 PEDESTRIAN_HIGHWAYS: frozenset[str] = frozenset({
-    "pedestrian", "footway", "path", "steps",
+    # cycleway: shared-use trails carry bikes but no cars — on-path car risk 1.0
+    "pedestrian", "footway", "path", "steps", "cycleway",
 })
 
 # Off-path REACH (m) per arterial class — how far its threat extends to a nearby

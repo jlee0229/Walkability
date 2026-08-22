@@ -18,9 +18,31 @@ Division of labour with the other ground-truth file:
   attribute it to a data gap vs. data-quality vs. weight problem.
 
 ## Where the rows come from (don't hand-pick)
-The routes are **auto-derived** from the `verify_city.py` route-type battery (the
-global taxonomy in `route_types.py`) — the same battery that drives the auto
-calibration deck. Every run regenerates:
+The routes are **auto-derived** from a city-wide **spatial pool**
+(`calibration_survey.py::generate_calibration_pool` → `pick_spread_deck`):
+- **Representative**: one short candidate route is sampled per ~0.9 km grid cell
+  of the routable graph — every neighbourhood with streets can appear, and dense
+  downtown can't dominate (which node-uniform sampling would let it do).
+- **Short**: O–D pairs are 250–900 m straight-line (~4–15 min walks), so each
+  card is one legible environment a human can rate in one look — not a multi-km
+  mix that averages to a meaningless middle.
+- **α=0 shortest paths, deliberately**: (1) the rated polyline never changes when
+  weights are re-tuned, so a filled `ideal_score` stays attached to the exact
+  geometry it judged across refits; (2) α>0 routes dodge low-scoring edges — the
+  deck would be biased toward what the current model already likes, truncating
+  the low tail calibration most needs.
+- **Score-spread pick**: the pool is thinned to *k* by keeping both observed
+  extremes and filling even score bins across [min, max]; within a bin the
+  candidate farthest from everything already picked wins (spatial maximin), so
+  the deck spans the range without collapsing onto one corridor.
+
+(Until 2026-08-19 the deck reused the `verify_city.py` route-type battery, but
+those are QA stimuli — data-seam straddles, bridge-deck checks, anchor clusters —
+and its pinned cases alone overflowed *k*: the deck came out long,
+plumbing-flavoured and unrepresentative. The battery remains the *verification*
+gate; the calibration deck now has its own sampler.)
+
+Every run regenerates:
 - `notebooks/<city>_calibration_survey.auto.html` — the visual deck (map, numbered
   segments, per-dimension bars, Street View links), and
 - `notebooks/calibration_targets.<city>.csv` — this file, with the `model_*`
@@ -37,15 +59,18 @@ the `model_*` snapshot **without touching any `ideal_score` you've already fille
 new battery routes appear blank, dropped ones fall off. Safe to run every build.
 
 ### Rate blind (recommended for the calibration pass)
-`--blind` writes `<city>_calibration_survey.auto.blind.html`: the model's verdict
-(overall score, dimension bars, audit flags) is hidden and the routes are shuffled,
-so your `ideal_score` is an **independent** judgment instead of an echo of the model
-— which is the whole point of a calibration target, and the only way to catch
-systematic over/under-scoring (the model can't grade its own homework). Segment
-colours + Street View stay as a navigation aid. The `model_*` columns are still
-written to the CSV (blindness only governs what you *see* while rating). Use the
-plain (non-blind) deck when you instead want to *verify* believability — there the
-model number is the stimulus you react to.
+`--blind` writes `<city>_calibration_survey.auto.blind.html`: **every** model
+output is hidden — overall score, dimension bars, audit flags, per-segment
+colours/scores (segments draw in one neutral colour), the "worst segment" link
+selection, the alpha-moves note — and the routes are shuffled, so your
+`ideal_score` is an **independent** judgment instead of an echo of the model —
+which is the whole point of a calibration target, and the only way to catch
+systematic over/under-scoring (the model can't grade its own homework). The
+numbered segments + Street View links stay as pure navigation aids. The `model_*`
+columns are still written to the CSV (blindness only governs what you *see* while
+rating — don't open the CSV until you're done). Use the plain (non-blind) deck
+when you instead want to *verify* believability — there the model number is the
+stimulus you react to.
 
 ## Workflow
 1. Regenerate (command above) → open `<city>_calibration_survey.auto.html`.

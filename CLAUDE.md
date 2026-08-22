@@ -124,7 +124,11 @@ count. `confidence` is a plain arithmetic mean (tiebreaker only).
 - `car_safety = min(graded_ceiling, on_path, off_path) × industrial_penalty`.
   *on_path* from own `maxspeed` (crash-risk curve, class default when missing);
   *off_path* proximity to a nearby fast road (non-arterials only; tunneled roads
-  dropped via `_drop_underground`); *graded_ceiling* rises above `CAR_SAFETY_CEIL`
+  dropped via `_drop_underground`; walker edges tagged `bridge=yes` re-score
+  against ELEVATED arterials only (`layer>0`/`bridge` — `_bridge_offpath_scores`):
+  a deck is separated from every at-grade road below, while the same structure's
+  roadway (sidewalk on a road bridge) still penalises); *graded_ceiling* rises
+  above `CAR_SAFETY_CEIL`
   (0.85) with `road_separation` (all-roads layer); *industrial_penalty* from
   `landuse=industrial` proximity.
 - `perceived_safety` (`eyes_score`) = noisy-OR of activity (POIs), enclosure
@@ -210,7 +214,7 @@ Dev/QA scripts, not packaged. Run from repo root.
   graph/profile/OSM layers and self-skips when unsupported. Per-city drift baseline
   + auto calibration deck. First run needs `--update`. Taxonomy doc:
   `Research/route_type_taxonomy.md`. The one manual step: rate
-  `<city>_calibration_survey.auto.html` into `ground_truth.<city>.csv`.
+  `<city>_calibration_survey.auto.html` into `calibration_targets.<city>.csv`.
 - **`verify_csr_parity.py --city <c>`** — CSR vs MultiDiGraph route parity;
   `source_fingerprint` refuses to compare across mismatched build snapshots.
 - **`problem_routes.py`** — region-tagged `PROBLEM_ROUTES` regression vs
@@ -218,8 +222,12 @@ Dev/QA scripts, not packaged. Run from repo root.
 - **`diagnostics.py`** — reusable, city-agnostic: `audit_route` (Tier-1 flags),
   `breakdown_route`, `safety_breakdown`, `score_heatmap`, `inspect_route_map`,
   `audit_scoring_coverage`. Every fn takes `G`.
-- **`calibration_survey.py`** — hand-picked or `--auto` (battery-derived) survey deck;
-  per-dimension bars + Street View. `ground_truth.csv` (+ per-city siblings) = the
+- **`calibration_survey.py`** — hand-picked deck, or `--auto`: a city-wide spatial
+  pool of SHORT α=0 routes (one per ~0.9 km cell → representative; α=0 so the rated
+  polyline is stable under re-tuning and doesn't dodge bad streets) thinned to k
+  spanning the score range (`generate_calibration_pool` → `pick_spread_deck`;
+  `--blind` hides every model verdict incl. segment colours + shuffles).
+  Per-dimension bars + Street View. `ground_truth.csv` (+ per-city siblings) = the
   human-judgment side. `archive/` = superseded history, not imported.
 
 ### App — "Humanpath" Streamlit (`app/streamlit_app.py`)
