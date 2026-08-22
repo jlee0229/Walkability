@@ -34,10 +34,13 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from walkability.graph.build import ENRICHED_PATH
+# NOTE: import only LIGHT modules here (config/compact/csr/routing/scoring —
+# numpy+networkx). graph.build (osmnx/geopandas) and graph.inventory (pandas)
+# must NOT be imported: the deploy image ships pwa/requirements.txt only, so
+# graph paths are built from OSM_DIR + the canonical enriched filenames.
+from walkability.config import OSM_DIR
 from walkability.graph.compact import load_runtime, runtime_path
 from walkability.graph.csr import RoutingGraph, csr_path, load_csr
-from walkability.graph.inventory import CITY_PROFILES
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import _as_float, _as_str, edge_walkability
 from walkability.scoring.weights import FACTOR_WEIGHTS
@@ -63,7 +66,7 @@ AREAS: dict[str, dict] = {
         "to": "Boston Public Garden",
         "style": {"type": "pmtiles",
                   "url": "https://pub-0235cb1b1636455cbaee68cc6b610bdd.r2.dev/boston_metro.pmtiles"},
-        "graph": ENRICHED_PATH,
+        "graph": OSM_DIR / "boston_walk_enriched.graphml",
     },
     "austin": {
         "label": "Austin, TX",
@@ -73,7 +76,7 @@ AREAS: dict[str, dict] = {
         "from": "Texas State Capitol",
         "to": "Zilker Park",
         "style": {"type": "url", "url": "https://tiles.openfreemap.org/styles/positron"},
-        "graph": CITY_PROFILES["austin"].enriched_path,
+        "graph": OSM_DIR / "austin_walk_enriched.graphml",
     },
 }
 
