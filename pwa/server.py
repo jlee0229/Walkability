@@ -58,7 +58,7 @@ from walkability.scoring.weights import FACTOR_WEIGHTS
 DEFAULT_AREA = "boston"
 AREAS: dict[str, dict] = {
     "boston": {
-        "label": "Boston metro",
+        "label": "Boston, MA",
         "bbox": (-71.21, 42.21, -70.94, 42.44),   # lon_min, lat_min, lon_max, lat_max
         "bias": (42.36, -71.08),                  # lat, lon
         "covered": "Boston, Brookline, Cambridge, Somerville, Everett, or Chelsea",

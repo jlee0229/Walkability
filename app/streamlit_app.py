@@ -402,7 +402,7 @@ _AUSTIN_GEO = {
 # `DEV_REGIONS` test beds stay resolvable (a set region_select value still loads
 # them) but are hidden from the promoted selector.
 _AREAS: dict[str, dict] = {
-    "full":   {"label": "Boston metro", "graph": str(ENRICHED_PATH), "city": True, **_BOSTON_GEO},
+    "full":   {"label": "Boston, MA", "graph": str(ENRICHED_PATH), "city": True, **_BOSTON_GEO},
     "austin": {"label": "Austin, TX",   "graph": str(CITY_PROFILES["austin"].enriched_path), "city": True, **_AUSTIN_GEO},
 }
 for _r in DEV_REGIONS:
