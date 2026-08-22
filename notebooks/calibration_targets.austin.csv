@@ -1,16 +1,16 @@
 route_name,area,ideal_score,confidence,tier,notes,model_score,model_safety,model_comfort,model_path,model_len_m
-spread_3775_-12228,"city sample (30.2069, -97.8227)",,,,"unrated: no Street View. OSM-verified 2026-08-22: NOT private -- Stephenson Nature Preserve (City of Austin PARD, open 05:00-22:00); trail ways foot=yes since 2021, no access tags, no gates on route (keypad gates 350 m N are the education-center compound). Route is real but is a 1 m dirt hiking trail (surface=ground, sac_scale=hiking, wheelchair=no) -- hence the blocked/informal look from the air. Score inflated by surface blindness: surface tag never downloaded (not in useful_tags_way) and OSM footway tier defaults surface 0.9",91,0.96,0.84,0.9,602
-spread_3783_-12230,"city sample (30.2653, -97.8324)",,,,"unrated: no Street View (it is a trail). OSM-verified 2026-08-22: Barton Creek Greenbelt / Hill of Life, public (PARD), foot=yes, no barriers; unpaved (surface=ground/gravel, sac_scale=hiking, wheelchair=no) -- same surface-blindness inflation as spread_3775_-12228",90,1.0,0.85,0.8,1136
-spread_3798_-12226,"city sample (30.3908, -97.8020)",85,sure,good,"almost ped_priority; driveways interrupt the path but pleasant neighborhood, no complaints",83,0.81,0.76,0.9,720
-spread_3796_-12207,"city sample (30.3693, -97.6554)",55,rough,mixed,"seg1 alleyway (avoid); seg6 very difficult crossing (dropped ~70->55); segs7-9 private community, no Street View access",72,0.71,0.81,0.7,1273
-spread_3781_-12218,"city sample (30.2555, -97.7390)",90,sure,car_free,"segs2-10 car-free trail+bridge (90+); segs 1,11-12 have cars but well buffered -> low 90s",70,0.82,0.67,0.6,1093
-spread_3782_-12237,"city sample (30.2585, -97.8909)",40,sure,poor,Bell Dr very unpleasant; segs4-5 no sidewalk (sidewalk appears out of thin air),57,0.52,0.71,0.58,789
-spread_3771_-12217,"city sample (30.1691, -97.7303)",60,rough,mixed,"path very good, environment very bad (long stretches of nothing); route just ends",56,0.37,0.84,0.75,567
-spread_3786_-12208,"city sample (30.2884, -97.6589)",80,rough,buffered,"intrinsically 90+: dedicated park path + dedicated ped crossing over the expressway; docked for walking over an expressway (environment), hence rough",45,0.56,0.68,0.48,1457
-spread_3771_-12241,"city sample (30.1730, -97.9216)",73,rough,good,"continuous sidewalk (rare for Austin) but long empty stretches; path good, environment less good; likely far worse at night",43,0.19,0.85,0.83,915
-spread_3806_-12208,"city sample (30.4488, -97.6638)",15,sure,hostile,"no sidewalk on segs4-5 (FM 1825), decently big road; rest unpleasant too",30,0.24,0.53,0.32,1028
-spread_3791_-12219,"city sample (30.3345, -97.7490)",5,sure,hostile,crossing N MoPac (underpass) too difficult,27,0.3,0.59,0.83,960
-spread_3774_-12205,"city sample (30.1982, -97.6384)",15,sure,hostile,crossing under the highway bridge is undoable; area very unwalkable,16,0.19,0.74,0.57,1379
-spread_3793_-12198,"city sample (30.3456, -97.5821)",5,sure,hostile,short + hostile: walks across the freeway,14,0.15,0.52,0.36,815
-spread_3807_-12225,"city sample (30.4638, -97.7963)",5,sure,hostile,"freeway crossing, essentially unwalkable",3,0.15,0.57,0.17,486
-spread_3764_-12226,"city sample (30.1126, -97.8027)",2,sure,hostile,"no sidewalk, very fast road",2,0.15,0.4,0.15,348
+spread_3813_-12224,"city sample (30.5047, -97.7874)",,,,,90,1.0,0.74,0.88,722
+spread_3784_-12205,"city sample (30.2733, -97.6337)",,,,,85,0.83,0.81,0.9,369
+spread_3771_-12232,"city sample (30.1697, -97.8499)",,,,,80,0.88,0.76,0.72,1059
+spread_3783_-12227,"city sample (30.2681, -97.8097)",,,,,75,0.72,0.74,0.81,1478
+spread_3772_-12240,"city sample (30.1828, -97.9185)",,,,,68,0.66,0.8,0.63,867
+spread_3794_-12213,"city sample (30.3559, -97.7025)",,,,,60,0.43,0.78,0.8,1086
+spread_3802_-12224,"city sample (30.4184, -97.7909)",,,,,54,0.46,0.73,0.56,1451
+spread_3775_-12222,"city sample (30.2006, -97.7684)",,,,,48,0.32,0.8,0.57,434
+spread_3784_-12213,"city sample (30.2775, -97.7010)",,,,,42,0.33,0.77,0.39,989
+spread_3780_-12238,"city sample (30.2469, -97.8964)",,,,,35,0.26,0.76,0.31,1088
+spread_3802_-12210,"city sample (30.4174, -97.6771)",,,,,24,0.39,0.76,0.34,1571
+spread_3770_-12208,"city sample (30.1675, -97.6591)",,,,,21,0.15,0.7,0.15,801
+spread_3792_-12227,"city sample (30.3360, -97.8082)",,,,,11,0.26,0.73,0.47,588
+spread_3790_-12198,"city sample (30.3263, -97.5773)",,,,,8,0.15,0.68,0.38,1246
+spread_3764_-12226,"city sample (30.1126, -97.8027)",2,sure,hostile,"no sidewalk, very fast road",2,0.15,0.41,0.15,348

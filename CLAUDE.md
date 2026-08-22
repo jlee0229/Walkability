@@ -14,7 +14,9 @@ python -m walkability.graph.download --city austin              # base OSM walk 
 python -m walkability.graph.download_environment --city austin  # env feature layers → data/osm/<city>_*.gpkg
 python -m walkability.graph.build --city austin                 # enriched graph (skips if output exists)
 python -m walkability.graph.build --force                       # rebuild after enrichment/scoring changes
-python -m walkability.graph.compact --city austin --csr         # → *.csr.pkl (app-preferred); also plain (runtime.pkl)
+python -m walkability.graph.compact --city austin               # → *.runtime.pkl (REQUIRED first after a rebuild)
+python -m walkability.graph.compact --city austin --csr         # → *.csr.pkl (app-preferred); built FROM the runtime
+                                                                #   sibling when it exists — a stale one silently wins
 
 # Dev subsets (Boston test beds; see DEV_REGIONS in build.py)
 python -m walkability.graph.build --dev --region nubian_roxbury
@@ -53,7 +55,8 @@ border edges lose their safety factor) and the per-city sidewalk inventory.
 
 Four tiers, first hit wins, recorded in `data_source`:
 1. `city_inventory` — spatial join within 10 m → `surface_score` (condition),
-   `surface_material_score` (material). Boston ~78%, Austin ~62%.
+   `surface_material_score` (material). Boston ~50% of the metro-hull graph
+   (the inventory covers Boston proper only), Austin ~62%.
 2. `highway=<type>` — OSM tag via `HIGHWAY_SCORES`. A tagged `surface` sets
    `surface_material_score` (`weights.surface_tag_score`; `material:variant`
    falls back to base material); it also fills material when tier 1 matched but
