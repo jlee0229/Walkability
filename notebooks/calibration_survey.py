@@ -19,8 +19,14 @@ the score" but *which dimension* the model mis-weighted — exactly what tuning
 CATEGORY_WEIGHTS / CATEGORY_FLOOR needs. The numbered segments make the
 "anything factually wrong?" question answerable block by block.
 
+`--auto` replaces the hand-picked list with the city-wide spatial pool (short
+α=0 routes, one per ~0.9 km cell, thinned to k spanning the score range — see
+``generate_calibration_pool`` / ``pick_spread_deck``); `--blind` additionally
+hides every model verdict and shuffles the deck for an independent rating pass.
+
     python notebooks/calibration_survey.py
     python notebooks/calibration_survey.py --out notebooks/calibration_survey.html
+    python notebooks/calibration_survey.py --city boston --auto --blind
 """
 
 from __future__ import annotations
@@ -28,9 +34,12 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import math
+from collections import defaultdict
 from pathlib import Path
 
 from walkability.graph.build import ENRICHED_PATH, load_graph
+from walkability.routing.clip import haversine_m
 from walkability.routing.cost import ALPHA_DEFAULT
 from walkability.routing.router import find_routes
 from walkability.scoring.factors import (
@@ -541,7 +550,15 @@ def _fmt(v, nd=2) -> str:
     return f"{v:.{nd}f}" if isinstance(v, (int, float)) else "—"
 
 
-def _seg_popup(s: dict) -> str:
+BLIND_SEG_COLOR = "#5b7fa6"   # one neutral colour — segment colour is a model verdict
+
+
+def _seg_popup(s: dict, blind: bool = False) -> str:
+    if blind:
+        # Only ground/input facts — no model scores (walk/surface/env are verdicts).
+        return (f"<b>#{s['i']} {html.escape(s['name'])}</b><br>"
+                f"{s['length']:.0f} m · highway: {html.escape(str(s['highway']))}<br>"
+                f"<a href='{streetview_url(*s['mid'])}' target='_blank'>Street View</a>")
     return (f"<b>#{s['i']} {html.escape(s['name'])}</b><br>"
             f"walk <b>{s['walk']:.2f}</b> · {s['length']:.0f} m<br>"
             f"highway: {html.escape(str(s['highway']))}<br>"
@@ -552,7 +569,7 @@ def _seg_popup(s: dict) -> str:
             f"<a href='{streetview_url(*s['mid'])}' target='_blank'>Street View</a>")
 
 
-def _route_map_html(r: dict) -> str:
+def _route_map_html(r: dict, blind: bool = False) -> str:
     import folium
     fig = folium.Figure(height=400)
     fmap = folium.Map(tiles="cartodbpositron", control_scale=True)
@@ -563,11 +580,13 @@ def _route_map_html(r: dict) -> str:
     fmap.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]], padding=(25, 25))
 
     for s in r["segments"]:
-        col = _score_color(s["walk"])
+        col = BLIND_SEG_COLOR if blind else _score_color(s["walk"])
+        tip = (f"#{s['i']} {s['name']}" if blind
+               else f"#{s['i']} {s['name']} — walk {s['walk']:.2f}")
         folium.PolyLine(
             s["coords"], color=col, weight=7, opacity=0.85,
-            tooltip=f"#{s['i']} {s['name']} — walk {s['walk']:.2f}",
-            popup=folium.Popup(_seg_popup(s), max_width=260),
+            tooltip=tip,
+            popup=folium.Popup(_seg_popup(s, blind=blind), max_width=260),
         ).add_to(fmap)
         folium.map.Marker(
             s["mid"],
@@ -583,7 +602,19 @@ def _route_map_html(r: dict) -> str:
     return fig._repr_html_()
 
 
-def _seg_table(r: dict) -> str:
+def _seg_table(r: dict, blind: bool = False) -> str:
+    if blind:
+        # Model columns (walk/surf/SCI/env/source) are verdicts — blind keeps only
+        # the ground facts a rater needs to navigate the segments.
+        rows = "".join(
+            f"<tr><td class='c'>{s['i']}</td><td>{html.escape(s['name'])}</td>"
+            f"<td class='r'>{s['length']:.0f}</td>"
+            f"<td>{html.escape(str(s['highway']) if s['highway'] else '—')}</td></tr>"
+            for s in r["segments"]
+        )
+        return ("<table class='seg'><thead><tr>"
+                "<th>#</th><th>street</th><th>m</th><th>highway</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table>")
     rows = "".join(
         f"<tr><td class='c'>{s['i']}</td><td>{html.escape(s['name'])}</td>"
         f"<td class='r'>{s['length']:.0f}</td>"
@@ -655,13 +686,18 @@ def _card(i: int, r: dict, blind: bool = False) -> str:
     cats = r["categories"]
     s = cats.get("safety", float("nan")); c = cats.get("comfort", float("nan")); p = cats.get("path", float("nan"))
     flags = r["audit"].get("flags", [])
-    # In blind mode: "worst seg" labels + per-seg scores are model verdicts → drop them.
-    sv_links = " ".join(
-        (f'<a href="{streetview_url(*w["mid"])}" target="_blank">Street View seg #{w["i"]}</a>'
-         if blind else
-         f'<a href="{streetview_url(*w["mid"])}" target="_blank">worst seg #{w["i"]} ({w["walk"]:.2f})</a>')
-        for w in r["worst"]
-    )
+    if blind:
+        # WHICH segments get links is itself a model verdict ("worst") — blind
+        # links evenly-spaced segments instead (pure navigation aid).
+        segs = r["segments"]
+        even = [segs[i] for i in sorted({0, len(segs) // 2, len(segs) - 1})]
+        sv_links = " ".join(
+            f'<a href="{streetview_url(*w["mid"])}" target="_blank">Street View seg #{w["i"]}</a>'
+            for w in even)
+    else:
+        sv_links = " ".join(
+            f'<a href="{streetview_url(*w["mid"])}" target="_blank">worst seg #{w["i"]} ({w["walk"]:.2f})</a>'
+            for w in r["worst"])
     # QUESTIONS carry trusted inline HTML + {placeholders}; format (not escape) them.
     questions = [Q_IDEAL_BLIND if blind else QUESTIONS[0], *QUESTIONS[1:]]
     qs = "".join(
@@ -684,23 +720,27 @@ def _card(i: int, r: dict, blind: bool = False) -> str:
     <div><div class="big">{r['walk']*100:.0f}<small>/100</small></div></div>
     <div class="bars">{_bar('safety', s)}{_bar('comfort', c)}{_bar('path', p)}</div>
   </div>"""
-    conf_txt = "" if blind else f"confidence {r['confidence']:.2f} · "
-    flags_txt = "" if (blind or not flags) else \
-        '· <span class="flags">flags: ' + html.escape(', '.join(flags)) + '</span>'
+    # confidence / alpha-moves / audit flags are all model behaviour → blind
+    # keeps only the physical facts (length, walk-time).
+    meta_parts = [f"<b>{r['length_m']:.0f} m</b>", f"~{r['minutes']:.0f} min"]
+    if not blind:
+        meta_parts.append(f"confidence {r['confidence']:.2f}")
+        meta_parts.append(f"alpha moves path: <b>{'yes' if r['alpha_moves'] else 'no'}</b>")
+        if flags:
+            meta_parts.append('<span class="flags">flags: '
+                              + html.escape(', '.join(flags)) + '</span>')
     return f"""<div class="card">
   <h2><span class="n">{i}</span>{html.escape(_area_label(r['area']))}
      <span class="rk" title="calibration_targets row key">{html.escape(name)}</span></h2>
   <p class="look">{html.escape(r['look_for'])}</p>
-  <div class="mapwrap">{_route_map_html(r)}</div>{panel}
-  <p class="meta"><b>{r['length_m']:.0f} m</b> · ~{r['minutes']:.0f} min ·
-     {conf_txt}alpha moves path: <b>{'yes' if r['alpha_moves'] else 'no'}</b>
-     {flags_txt}</p>
+  <div class="mapwrap">{_route_map_html(r, blind=blind)}</div>{panel}
+  <p class="meta">{' · '.join(meta_parts)}</p>
   <p class="links"><b>Look:</b>
      <a href="{streetview_url(*r['coords'][0])}" target="_blank">Street View (start)</a>
      <a href="{_gmaps_route(r['origin'], r['dest'])}" target="_blank">Google walking route</a>
      {sv_links}</p>
   <details class="segs"><summary>{len(r['segments'])} segments — table (numbers match the map pins)</summary>
-     {_seg_table(r)}</details>
+     {_seg_table(r, blind=blind)}</details>
   <div class="q"><b>Questions</b><ol>{qs}</ol>
     <div class="tmpl">{tmpl}</div></div>
 </div>"""
@@ -708,17 +748,18 @@ def _card(i: int, r: dict, blind: bool = False) -> str:
 
 def build_html(results: list[dict], city: str = "Boston", blind: bool = False) -> str:
     cards = "\n".join(_card(i, r, blind=blind) for i, r in enumerate(results, start=1))
+    csv_name = targets_path(city.split()[0].lower()).name
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Walkability calibration survey — {html.escape(city)}</title><style>{CSS}</style></head><body>
 <h1>Walkability calibration survey — {html.escape(city)}</h1>
 <p class="sub">{len(results)} routes across {html.escape(city)} · model = the HDI-style two-level score.
 For each card give an <b>ideal_score (0–100)</b> + reasoning in the matching
-<code>route_name</code> row of <code>calibration_targets.{html.escape(city.split()[0].lower())}.csv</code>.</p>
-{'<div class="blindbanner"><b>Blind pass.</b> The model&#39;s scores (overall number, dimension bars, flags) are hidden and the routes are shuffled — so your <code>ideal_score</code> is an independent judgment, not an echo of the model. Segment colours + Street View remain to help you read the ground.</div>' if blind else ''}
+<code>route_name</code> row of <code>{html.escape(csv_name)}</code>.</p>
+{'<div class="blindbanner"><b>Blind pass.</b> Every model output is hidden — overall number, dimension bars, segment colours/scores, flags — and the routes are shuffled, so your <code>ideal_score</code> is an independent judgment, not an echo of the model. The numbered segments + Street View links remain as navigation aids.</div>' if blind else ''}
 <div class="intro"><b>How to read each card, and what to record</b>
 <ol>
-<li><b>Map</b>: the route, each <b>segment</b> (one street) drawn + numbered and coloured by its walk_score (red→green). Hover or click a segment for detail + Street View; the numbers match the segment table.</li>
-{'<li><b>Scores are hidden</b> in this blind pass — no overall number or dimension bars. Judge walkability from the map geometry + Street View, on the 0–100 scale, on your own.</li>' if blind else '<li><b>Big number</b> = the model&#39;s current walk_score (0–100); <b>bars</b> = its three length-weighted dimensions — <b>safety</b> (cars + eyes-on-street), <b>comfort</b> (surface/material/width), <b>path</b> (real walking right-of-way). Shown for context — your <code>ideal_score</code> is your own call.</li>'}
+{'<li><b>Map</b>: the route, each <b>segment</b> (one street) drawn + numbered in a neutral colour (segment colours are a model verdict, so they&#39;re off in a blind pass). Hover or click a segment for its street/length + Street View; the numbers match the segment table.</li>' if blind else '<li><b>Map</b>: the route, each <b>segment</b> (one street) drawn + numbered and coloured by its walk_score (red→green). Hover or click a segment for detail + Street View; the numbers match the segment table.</li>'}
+{'<li><b>Scores are hidden</b> in this blind pass — no overall number, dimension bars, or per-segment scores. Judge walkability from the map geometry + Street View, on the 0–100 scale, on your own.</li>' if blind else '<li><b>Big number</b> = the model&#39;s current walk_score (0–100); <b>bars</b> = its three length-weighted dimensions — <b>safety</b> (cars + eyes-on-street), <b>comfort</b> (surface/material/width), <b>path</b> (real walking right-of-way). Shown for context — your <code>ideal_score</code> is your own call.</li>'}
 <li>The grey chip after each title (e.g. <code>high#0</code>) is the <b>route_name</b> — the row key in the CSV. Fill <code>ideal_score</code>, <code>confidence</code>, <code>tier</code>, <code>notes</code>; the copy-paste block at the bottom of each card mirrors those columns.</li>
 </ol>
 <b>What to sweat</b> (the fit needs relative structure, not absolute precision): get the <b>ordering</b> right (is the car-free path clearly above the busy stroad?) and the <b>tier gaps</b> (how <i>much</i> higher — 3 points or 12?). Two or three confident hard anchors (worst ≈ , best ≈ ) pin the scale; the middle interpolates.</div>
@@ -727,43 +768,126 @@ For each card give an <b>ideal_score (0–100)</b> + reasoning in the matching
 
 
 # ---------------------------------------------------------------------------
-# Auto-picked survey — driven by the verify_city route battery (no hand-picking)
+# Auto-picked survey — a city-wide spatial pool of SHORT routes, thinned to a
+# deck that spans the score range.
+#
+# This replaced the verify_city-battery-derived pick (2026-08-19). The battery
+# routes are QA stimuli — data-seam straddles, bridge-deck checks, two anchor
+# clusters — and its pinned cases alone overflowed k, so the deck ended up 100%
+# plumbing-test routes (long, unrepresentative, no ordinary streets). The
+# calibration deck has a different job: SHORT, everyday routes a human can rate
+# in one look, drawn from the WHOLE city, spanning the score range.
 # ---------------------------------------------------------------------------
 
-def auto_pick_routes(candidates: list[dict], k: int = 15) -> list[dict]:
-    """Pick ~``k`` routes spanning the observed walk-score spectrum plus every
-    "pinned" case (anchor / seam / water) from the verify_city battery output.
+POOL_CELL_DEG = 0.008        # ~0.9 km grid — the spatial stratification unit
+POOL_MIN_CELL_NODES = 8      # skip near-empty slivers (water edges, park fringes)
+POOL_BAND_M = (250.0, 900.0)  # straight-line O–D band → ~4–15 min walks
+POOL_MAX_ROUTE_M = 1600.0    # drop pairs whose shortest path detours far
+# Calibration routes are ALPHA=0 (pure shortest path), deliberately:
+# 1. geometry is stable under re-tuning — the rated polyline never changes when
+#    CATEGORY_WEIGHTS etc. move, so a filled ideal_score stays attached to the
+#    exact route it was judged on across refits;
+# 2. no circularity — α>0 routes dodge low-scoring edges, i.e. the deck would be
+#    biased toward what the current model already likes, truncating the low tail
+#    that calibration most needs.
+POOL_ALPHA = 0.0
+POOL_LOOK_FOR = ("A short everyday walk from a city-wide spatial sample — "
+                 "rate what you see, block by block.")
 
-    ``candidates`` are the dicts ``route_types.run_battery`` emits (keys:
-    ``name, area, origin, dest, alpha, walk, look_for, pin``). Pinned cases are
-    always kept (the extremes and the interesting data cases); the rest fill
-    across even quantiles of ``walk`` so the human sees the full range. Returns
-    ``case`` dicts ready for ``_survey`` (helper keys ``walk``/``pin`` stripped),
-    ordered high→low walk for the deck.
+
+def generate_calibration_pool(ctx, per_cell: int = 1) -> list[dict]:
+    """One short routed O–D pair per occupied grid cell, across the whole city.
+
+    ``ctx`` is a ``route_types.Ctx``. Stratifying by ~0.9 km cell (instead of
+    sampling nodes uniformly) makes the pool *area*-representative: dense downtown
+    contributes a handful of routes instead of dominating, and every outer
+    neighbourhood with streets gets a candidate. Origins come from the cell, the
+    destination from its 3×3 block, rejection-sampled into ``POOL_BAND_M``; each
+    pair is routed at ``POOL_ALPHA`` and carries its model ``walk`` for the
+    spread pick. Names are cell-derived so re-runs (same seed/graph) are stable
+    for the merge-preserving CSV sync.
     """
-    seen: set = set()
-    uniq: list[dict] = []
-    for c in candidates:
-        key = (round(c["origin"][0], 4), round(c["origin"][1], 4),
-               round(c["dest"][0], 4), round(c["dest"][1], 4))
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(c)
+    cells: dict[tuple[int, int], list] = defaultdict(list)
+    for _nid, la, lo in ctx.routable_nodes:
+        cells[(math.floor(la / POOL_CELL_DEG), math.floor(lo / POOL_CELL_DEG))].append((la, lo))
 
-    pinned = [c for c in uniq if c.get("pin")]
-    rest = sorted((c for c in uniq if not c.get("pin")), key=lambda c: c["walk"])
-    picked = list(pinned)
-    slots = max(0, k - len(picked))
-    if slots and rest:
-        if slots == 1:
-            idxs = [len(rest) // 2]
-        else:
-            idxs = sorted({round(i * (len(rest) - 1) / (slots - 1)) for i in range(slots)})
-        picked.extend(rest[i] for i in idxs)
+    pool: list[dict] = []
+    for cid in sorted(cells):
+        own = cells[cid]
+        if len(own) < POOL_MIN_CELL_NODES:
+            continue
+        block = list(own)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if (dy, dx) != (0, 0):
+                    block.extend(cells.get((cid[0] + dy, cid[1] + dx), []))
+        rng = ctx.rng(f"pool:{cid[0]}:{cid[1]}")
+        got = tries = 0
+        while got < per_cell and tries < 300:
+            tries += 1
+            o, d = rng.choice(own), rng.choice(block)
+            if not (POOL_BAND_M[0] <= haversine_m(o[0], o[1], d[0], d[1]) <= POOL_BAND_M[1]):
+                continue
+            try:
+                routes = find_routes(ctx.G, o, d, alpha=POOL_ALPHA)
+            except Exception:
+                continue
+            if not routes or routes[0].total_length > POOL_MAX_ROUTE_M:
+                continue
+            got += 1
+            suffix = f"_{got}" if per_cell > 1 else ""
+            pool.append({
+                "name": f"spread_{cid[0]}_{cid[1]}{suffix}",
+                "area": f"city sample ({o[0]:.4f}, {o[1]:.4f})",
+                "origin": o, "dest": d, "alpha": POOL_ALPHA,
+                "walk": routes[0].walk_score,
+                "mid": ((o[0] + d[0]) / 2.0, (o[1] + d[1]) / 2.0),
+                "look_for": POOL_LOOK_FOR,
+            })
+    return pool
+
+
+def pick_spread_deck(pool: list[dict], k: int = 15) -> list[dict]:
+    """Thin the pool to ~``k`` routes that span the observed score range while
+    staying spread across the city.
+
+    The two observed extremes are always kept; the remaining ``k−2`` slots are
+    even score bins over [min, max], and within a bin the candidate farthest
+    (maximin O–D midpoint distance) from everything already picked wins — so the
+    deck can't collapse onto one corridor or neighbourhood. Empty bins (score
+    gaps are real: distributions are lumpy) are topped up by pure spatial
+    maximin, keeping k and representativeness. Returns ``case`` dicts ready for
+    ``_survey`` (helper keys stripped), ordered high→low walk.
+    """
+    if not pool:
+        return []
+    ordered = sorted(pool, key=lambda c: c["walk"])
+    if len(ordered) <= k:
+        picked = list(ordered)
+    else:
+        picked = [ordered[0], ordered[-1]]
+        lo, hi = ordered[0]["walk"], ordered[-1]["walk"]
+        span = (hi - lo) or 1.0
+        nbins = k - 2
+
+        def sep(c):
+            return min(haversine_m(c["mid"][0], c["mid"][1], p["mid"][0], p["mid"][1])
+                       for p in picked)
+
+        for b in range(nbins):
+            blo, bhi = lo + span * b / nbins, lo + span * (b + 1) / nbins
+            cands = [c for c in ordered
+                     if c not in picked and blo <= c["walk"] <= bhi]
+            if cands:
+                picked.append(max(cands, key=sep))
+        rest = [c for c in ordered if c not in picked]
+        while len(picked) < k and rest:
+            best = max(rest, key=sep)
+            picked.append(best)
+            rest.remove(best)
 
     picked.sort(key=lambda c: c["walk"], reverse=True)
-    return [{key: v for key, v in c.items() if key not in ("walk", "pin")}
+    return [{key: v for key, v in c.items() if key not in ("walk", "mid")}
             for c in picked]
 
 
@@ -846,19 +970,30 @@ def sync_targets_csv(results: list[dict], city: str,
     return out, len(rows), unrated
 
 
-def build_auto_survey(G, candidates: list[dict], city: str, k: int = 15,
-                      out: Path | None = None, blind: bool = False) -> Path:
-    """Render the auto-picked calibration deck from battery candidates → HTML,
-    and sync the per-city calibration_targets CSV stub alongside it.
+def build_auto_survey(ctx, city: str, k: int = 15, out: Path | None = None,
+                      blind: bool = False, per_cell: int = 1) -> Path:
+    """Render the auto-picked calibration deck → HTML, and sync the per-city
+    calibration_targets CSV stub alongside it.
 
-    Reuses ``_survey`` / ``build_html`` unchanged, so the auto deck has the same
-    per-dimension bars, numbered segments and Street View links as the hand-picked
-    one. This is the single genuinely-manual verification step: the human reads a
-    card and fills ``ideal_score`` + ``notes`` (+ optional ``confidence``/``tier``)
-    for the matching ``route_name`` row in ``calibration_targets.<city>.csv``;
-    everything structural is automated.
+    ``ctx`` is a ``route_types.Ctx``; the deck is drawn from the city-wide
+    spatial pool (``generate_calibration_pool`` → ``pick_spread_deck``), NOT the
+    verify_city battery. Reuses ``_survey`` / ``build_html`` unchanged, so the
+    auto deck has the same numbered segments and Street View links as the
+    hand-picked one. This is the single genuinely-manual verification step: the
+    human reads a card and fills ``ideal_score`` + ``notes`` (+ optional
+    ``confidence``/``tier``) for the matching ``route_name`` row in
+    ``calibration_targets.<city>.csv``; everything structural is automated.
     """
-    cases = auto_pick_routes(candidates, k=k)
+    G = ctx.G
+    pool = generate_calibration_pool(ctx, per_cell=per_cell)
+    if not pool:
+        raise RuntimeError("calibration pool came up empty — no routable cells?")
+    walks = sorted(c["walk"] for c in pool)
+    q = lambda p: walks[min(len(walks) - 1, int(p * len(walks)))]  # noqa: E731
+    print(f"Pool: {len(pool)} short routes across the city — walk "
+          f"min {walks[0]:.2f} · q25 {q(.25):.2f} · med {q(.5):.2f} · "
+          f"q75 {q(.75):.2f} · max {walks[-1]:.2f}")
+    cases = pick_spread_deck(pool, k=k)
     default_name = (f"{city}_calibration_survey.auto"
                     f"{'.blind' if blind else ''}.html")
     out = out or Path(__file__).with_name(default_name)
@@ -896,10 +1031,13 @@ def main():
     ap.add_argument("--out", default=None,
                     help="Output HTML (default: <city>_calibration_survey[.auto].html).")
     ap.add_argument("--auto", action="store_true",
-                    help="Auto-pick routes from the verify_city route battery instead "
-                         "of the hand-picked CITY_ROUTES (works for any city).")
+                    help="Auto-pick routes: a city-wide spatially-stratified pool of "
+                         "short routes, thinned to k spanning the score range "
+                         "(works for any city; no hand-picked coords).")
     ap.add_argument("--k", type=int, default=15, help="Auto: number of routes to pick.")
-    ap.add_argument("--seed", type=int, default=7, help="Auto: battery sampling seed.")
+    ap.add_argument("--per-cell", type=int, default=1,
+                    help="Auto: candidate routes sampled per ~0.9 km grid cell.")
+    ap.add_argument("--seed", type=int, default=7, help="Auto: pool sampling seed.")
     ap.add_argument("--blind", action="store_true",
                     help="Auto: hide the model's scores (overall + dimension bars + "
                          "flags) and shuffle route order, so the ideal_score pass is "
@@ -913,9 +1051,9 @@ def main():
     if args.auto:
         import route_types
         ctx = route_types.Ctx(G, CITY_PROFILES[args.city], seed=args.seed)
-        cands = route_types.run_battery(ctx, lambda *a, **k: None)[0]
-        build_auto_survey(G, cands, args.city, k=args.k,
-                          out=Path(args.out) if args.out else None, blind=args.blind)
+        build_auto_survey(ctx, args.city, k=args.k,
+                          out=Path(args.out) if args.out else None,
+                          blind=args.blind, per_cell=args.per_cell)
         return
 
     if args.city not in CITY_ROUTES:

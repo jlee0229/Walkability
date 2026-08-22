@@ -265,13 +265,12 @@ def run_parity(city: str, n: int) -> None:
     check("csr router matches the MultiDiGraph router", rc == 0, f"gate exit {rc}")
 
 
-def emit_survey(G, candidates, city: str) -> None:
+def emit_survey(ctx, city: str) -> None:
     print("\n== Calibration deck (the one manual step) ==")
-    if not candidates:
-        print("    [INFO] no found routes to build a deck")
-        return
     try:
-        out = calibration_survey.build_auto_survey(G, candidates, city, k=15)
+        # Deck routes come from the city-wide spatial pool (short, representative,
+        # score-spread) — NOT the battery candidates, which are QA stimuli.
+        out = calibration_survey.build_auto_survey(ctx, city, k=15)
     except Exception as exc:  # pragma: no cover
         print(f"    [WARN] could not build calibration deck: {type(exc).__name__}: {exc}")
         return
@@ -313,7 +312,8 @@ def main() -> int:
 
     print("\n== Route-type battery (the global taxonomy, instantiated) ==")
     ctx = route_types.Ctx(G, profile, seed=args.seed, scale=args.scale)
-    candidates, ran, skipped, outcomes = route_types.run_battery(ctx, check)
+    # (battery candidates are no longer the deck source — see emit_survey)
+    _candidates, ran, skipped, outcomes = route_types.run_battery(ctx, check)
     print(f"  battery: {ran} types run, {skipped} skipped")
 
     print("\n== Drift baseline ==")
@@ -322,7 +322,7 @@ def main() -> int:
     if not args.no_parity:
         run_parity(args.city, args.parity_n)
     if not args.no_survey:
-        emit_survey(G, candidates, args.city)
+        emit_survey(ctx, args.city)
 
     print(f"\n{_PASS} passed, {_FAIL} failed.")
     return 1 if _FAIL else 0

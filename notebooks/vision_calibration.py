@@ -379,9 +379,10 @@ def _safe(name: str) -> str:
 
 
 def derive_cases(city: str, k: int, seed: int, refresh: bool = False) -> list[dict]:
-    """The auto-picked battery cases for `city` — identical derivation to
-    `calibration_survey --auto`, so `route_name` keys line up with
-    `calibration_targets.<city>.csv`. Cached per city with the graph mtime."""
+    """The auto-picked deck cases for `city` — identical derivation to
+    `calibration_survey --auto` (the city-wide spatial pool → score-spread pick),
+    so `route_name` keys line up with `calibration_targets.<city>.csv`. Cached
+    per city with the graph mtime."""
     from walkability.graph.inventory import CITY_PROFILES
 
     profile = CITY_PROFILES[city]
@@ -400,13 +401,13 @@ def derive_cases(city: str, k: int, seed: int, refresh: bool = False) -> list[di
 
     from walkability.graph.build import load_graph
     import route_types
-    from calibration_survey import auto_pick_routes
+    from calibration_survey import generate_calibration_pool, pick_spread_deck
 
-    print(f"Deriving battery cases for {city} (slow path: graph + battery) ...")
+    print(f"Deriving deck cases for {city} (slow path: graph + spatial pool) ...")
     G = load_graph(gpath)
     ctx = route_types.Ctx(G, profile, seed=seed)
-    candidates = route_types.run_battery(ctx, lambda *a, **kw: None)[0]
-    cases = auto_pick_routes(candidates, k=k)
+    pool = generate_calibration_pool(ctx)
+    cases = pick_spread_deck(pool, k=k)
 
     # Routing here (with the graph already resident) keeps fetch runs graph-free.
     from walkability.routing.router import find_routes
