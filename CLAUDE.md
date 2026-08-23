@@ -283,6 +283,15 @@ full-height map. Load-bearing behaviours (don't regress):
   (`graph/csr.py`, Austin ~78 MB/0.026 s). CSR router (`csr_router.py`) is faster
   than Nx and shares all pure logic via the `CsrEdge` flyweight; Nx path untouched.
   csr/runtime pickles for both cities uploaded to `data-v1` 2026-08-22, live-tested.
+- **PWA follow-me nav (2026-08-23):** "Start walking" on the focused route card →
+  watchPosition chase camera (heading = route bearing; `navBearing` is the one
+  pluggable spot for a future compass experiment), snap/progress via
+  `navGeom`/`snapToRoute`, auto-reroute after 3 fixes >40 m off-line, arrival
+  ≤20 m, screen wake lock. Location is watched **only** during an active session.
+  `?sim=1` replays deterministic fixes (`window.__hpSim`) for desktop dev.
+  Checkpoints: `python pwa/tests/run_all.py` vs a local `uvicorn pwa.server:app`
+  (Playwright; stubs the basemap when offline). Any PWA shell change must bump
+  `sw.js` VERSION (now v8).
 - **Owed for a polished Austin:** a brand-tinted Austin PMTiles cut (currently
   OpenFreeMap).
 - **Removed factors** (`crossing_quality`, `poi_density`, `elevation_change`) — re-add
