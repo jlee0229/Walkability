@@ -822,19 +822,75 @@
     });
   }
 
-  // Off-route / arrival: indicator only for now (auto-reroute lands next).
+  // Off-route: after OFFROUTE_FIXES consecutive far fixes, recompute the route
+  // from the current position (same destination + alpha — the backend takes
+  // any O–D). One reroute in flight at a time; a failure falls back to
+  // guiding along the existing line and retries after another run of
+  // off-route fixes.
   function handleOffRoute(lat, lon, s) {
     var nav = state.nav;
-    if (s.residualM > OFFROUTE_M) {
-      nav.offCount++;
-      navStatusMsg("Off route");
-    } else {
+    if (s.residualM <= OFFROUTE_M) {
       nav.offCount = 0;
       if (!nav.rerouting) navStatusMsg(null);
+      return;
     }
+    nav.offCount++;
+    if (nav.rerouting) return;
+    if (nav.offCount < OFFROUTE_FIXES || !state.dest) {
+      navStatusMsg("Off route");
+      return;
+    }
+    reroute(lat, lon);
   }
 
-  function handleArrival(s) {}
+  function reroute(lat, lon) {
+    var nav = state.nav;
+    nav.rerouting = true;
+    navStatusMsg("Rerouting…");
+    var alpha = (alphaSlider.value / 100) * (state.config ? state.config.alpha_max : 5);
+    var qs = "olat=" + lat + "&olon=" + lon +
+             "&dlat=" + state.dest.lat + "&dlon=" + state.dest.lon +
+             "&alpha=" + alpha.toFixed(2) + areaParam();
+    fetch("/api/route?" + qs).then(function (resp) {
+      if (!resp.ok) throw new Error("reroute " + resp.status);
+      return resp.json();
+    }).then(function (data) {
+      if (state.nav !== nav) return;        // exited while in flight
+      if (!data.routes.length) throw new Error("no route");
+      state.routes = data.routes;
+      state.focus = 0;
+      state.segmented = false;
+      state.detailOpen = false;
+      renderCards();                        // hidden during nav; keeps state consistent
+      nav.geom = navGeom(data.routes[0]);
+      nav.lastSegIdx = null;
+      nav.heading = null;
+      nav.offCount = 0;
+      nav.rerouting = false;
+      if (nav.sim) nav.sim.t = 0;           // sim progress restarts on the new route
+      setNavHud(nav.geom.total);
+      navStatusMsg("Rerouted");
+      setTimeout(function () {
+        if (state.nav === nav && !nav.rerouting && nav.residualM <= OFFROUTE_M) navStatusMsg(null);
+      }, 3000);
+      redrawMap();
+    }).catch(function () {
+      if (state.nav !== nav) return;
+      nav.rerouting = false;
+      nav.offCount = 0;                     // full run of off-route fixes before retrying
+      navStatusMsg("Couldn't reroute — following the original route.");
+    });
+  }
+
+  function handleArrival(s) {
+    var nav = state.nav;
+    if (s.progressM < nav.geom.total - ARRIVE_M || s.residualM >= ARRIVE_RESIDUAL_M) return;
+    nav.arrived = true;
+    navStatusMsg(null);
+    navRemain.textContent = "You've arrived";
+    navEta.textContent = "";
+    setTimeout(function () { if (state.nav === nav) exitNav(); }, 4000);
+  }
 
   function acquireWakeLock() {
     if (!("wakeLock" in navigator)) return;
