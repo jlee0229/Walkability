@@ -89,6 +89,19 @@
     <span class="pill-edit">Edit</span>
   </button>
 
+  <!-- Nav mode HUD: replaces the search chrome while follow-me walking is on.
+       Remaining distance + ETA up top; End pill bottom-centre; Re-center chip
+       appears when the user pans away from the chase camera. -->
+  <div class="nav-hud" id="navHud" hidden>
+    <div class="nav-hud-main">
+      <span class="nav-remain" id="navRemain">—</span>
+      <span class="nav-eta" id="navEta">—</span>
+    </div>
+    <div class="nav-status" id="navStatus" hidden></div>
+  </div>
+  <button class="nav-recenter" id="navRecenter" hidden>Re-center</button>
+  <button class="nav-exit" id="navExit" hidden>End walk</button>
+
   <!-- Floating map controls. Locate uses the standard navigation-arrow glyph;
        "Fit route" is a labelled chip that only appears once the user has
        panned/zoomed away from the fitted route (contextual, self-explaining). -->

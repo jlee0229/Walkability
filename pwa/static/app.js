@@ -31,6 +31,7 @@
     origin: null,          // {lat, lon, label, device}
     dest: null,
     youLoc: null,          // last device fix [lon, lat]
+    nav: null,             // follow-me walking session (see startNav)
   };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -132,6 +133,7 @@
     // "Fit route" chip: appears once the camera has wandered from the fitted
     // view (any route on screen), disappears on refit.
     map.on("moveend", function () {
+      if (state.nav) return;   // chase camera moves constantly — no fit chip
       if (!state.routes.length || !fitCam || Date.now() < fitQuietUntil) return;
       var p0 = map.project(fitCam.c), p1 = map.project(map.getCenter());
       var dx = p0.x - p1.x, dy = p0.y - p1.y;
@@ -144,6 +146,14 @@
       map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
     });
     map.on("error", function (e) { console.error("[maplibre]", e && e.error); });
+    // A user pan during nav pauses the chase camera ("free look"); the
+    // Re-center chip resumes it. dragstart fires only on user gestures, never
+    // on easeTo animations, so the chase camera can't un-follow itself.
+    map.on("dragstart", function () {
+      if (!state.nav) return;
+      state.nav.follow = false;
+      navRecenter.hidden = false;
+    });
     map.on("load", function () {
       styleLoaded = true;
       addRouteLayers();
@@ -197,6 +207,17 @@
                "circle-color": ["match", ["get", "role"], "origin", ACCENT, INK],
                "circle-stroke-width": 3, "circle-stroke-color": HALO },
     });
+    // Nav puck: a map-aligned arrow rotated to the walking heading (canvas-
+    // drawn — no sprite dependency). Sits above every other point layer.
+    if (!map.hasImage("nav-puck")) map.addImage("nav-puck", navPuckImage());
+    map.addLayer({
+      id: "r-navpuck", type: "symbol", source: "points",
+      filter: ["==", ["get", "role"], "navpuck"],
+      layout: { "icon-image": "nav-puck", "icon-size": 0.6,
+                "icon-rotate": ["get", "heading"],
+                "icon-rotation-alignment": "map",
+                "icon-allow-overlap": true, "icon-ignore-placement": true },
+    });
     // Tap tooltips (mobile): block score / O-D labels.
     var popup = new maplibregl.Popup({ closeButton: false, offset: 12, className: "hp-pop" });
     ["r-line", "r-alt", "r-points"].forEach(function (id) {
@@ -238,7 +259,11 @@
   function buildFC() {
     var routes = state.routes, focus = state.focus, segmented = state.segmented;
     var feats = [], points = [];
-    if (state.youLoc) {
+    if (state.nav && state.nav.snapped) {
+      points.push({ type: "Feature",
+                    properties: { role: "navpuck", heading: state.nav.heading || 0 },
+                    geometry: { type: "Point", coordinates: state.nav.snapped } });
+    } else if (state.youLoc) {
       points.push({ type: "Feature", properties: { role: "you", label: MYLOC },
                     geometry: { type: "Point", coordinates: state.youLoc } });
     }
@@ -311,7 +336,8 @@
     } catch (e) { fitCam = null; }
     fitQuietUntil = Date.now() + (animate ? 800 : 0) + 450;
     fitChip.hidden = true;
-    map.fitBounds(bounds, { padding: padding, duration: animate ? 800 : 0, maxZoom: 17 });
+    map.fitBounds(bounds, { padding: padding, duration: animate ? 800 : 0, maxZoom: 17,
+                            bearing: 0, pitch: 0 });
   }
 
   // ------------------------------------------------------------ route cards
@@ -336,8 +362,10 @@
           Math.max(4, Math.round(r.score * 100)) + "%;background:" + col + '"></div></div>' +
         '<div class="card-meta"><b>' + distStr(r.distance_m) + "</b> · <b>" +
           timeStr(r.distance_m) + "</b> walk</div>" +
-        '<div class="card-via">' + (r.via ? "via " + r.via : r.segments.length + " blocks") + "</div>";
+        '<div class="card-via">' + (r.via ? "via " + r.via : r.segments.length + " blocks") + "</div>" +
+        '<button class="nav-start">Start walking</button>';
       card.addEventListener("click", function (e) {
+        if (e.target.classList.contains("nav-start")) { startNav(); return; }
         var wantDetail = e.target.classList.contains("card-details-btn");
         if (state.focus !== i) setFocus(i);
         if (wantDetail) toggleDetail(state.detailOpen && state.focus === i ? false : true);
@@ -680,7 +708,205 @@
     return (prevHeading + delta * BEARING_SMOOTH + 360) % 360;
   }
 
-  window.__hpNav = { geom: navGeom, snap: snapToRoute, bearing: navBearing };
+  // --- nav lifecycle ------------------------------------------------------
+  var NAV_CAM_MS = 800;        // min gap between chase-camera moves
+  var NAV_ZOOM = 17.5, NAV_PITCH = 48;
+  var OFFROUTE_M = 40;         // residual beyond this counts as off-route
+  var OFFROUTE_FIXES = 3;      // consecutive off-route fixes before rerouting
+  var ARRIVE_M = 20, ARRIVE_RESIDUAL_M = 30;
+
+  var navHud = $("navHud"), navRemain = $("navRemain"), navEta = $("navEta"),
+      navStatus = $("navStatus"), navExit = $("navExit"), navRecenter = $("navRecenter");
+  var SIM_ON = /[?&]sim=1/.test(location.search);
+
+  function navPuckImage() {
+    var c = document.createElement("canvas");
+    c.width = c.height = 64;
+    var g = c.getContext("2d");
+    g.translate(32, 32);
+    g.beginPath();
+    g.moveTo(0, -20); g.lineTo(15, 14); g.lineTo(0, 6); g.lineTo(-15, 14);
+    g.closePath();
+    g.fillStyle = YOU; g.strokeStyle = "#fff"; g.lineWidth = 5;
+    g.lineJoin = "round"; g.stroke(); g.fill();
+    return g.getImageData(0, 0, 64, 64);
+  }
+
+  function setNavHud(remainM) {
+    navRemain.textContent = distStr(Math.max(0, remainM));
+    navEta.textContent = timeStr(Math.max(0, remainM)) + " left";
+  }
+
+  function navStatusMsg(msg) {
+    navStatus.hidden = !msg;
+    if (msg) navStatus.textContent = msg;
+  }
+
+  function startNav() {
+    if (state.nav || !state.routes.length) return;
+    var geom = navGeom(state.routes[state.focus]);
+    state.nav = { watchId: null, simTimer: null, sim: null, wakeLock: null,
+                  geom: geom, snapped: null, heading: null,
+                  progressM: 0, residualM: 0, lastSegIdx: null,
+                  offCount: 0, rerouting: false, arrived: false,
+                  follow: true, lastCamAt: 0 };
+    document.body.classList.add("nav");
+    navHud.hidden = false; navExit.hidden = false; navRecenter.hidden = true;
+    navStatusMsg(null);
+    fitChip.hidden = true;
+    setNavHud(geom.total);
+    acquireWakeLock();
+    if (SIM_ON) { simStart(); return; }
+    if (!navigator.geolocation) {
+      toast("Location isn't available in this browser.");
+      exitNav();
+      return;
+    }
+    state.nav.watchId = navigator.geolocation.watchPosition(function (pos) {
+      onNavFix(pos.coords.latitude, pos.coords.longitude);
+    }, function (err) {
+      if (err.code === 1) {
+        toast("Location access is off for this site. Allow location in your browser settings to be guided.");
+        exitNav();
+      }
+      // transient errors (timeout / unavailable): keep the last fix and wait
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 2000 });
+  }
+
+  function exitNav() {
+    var nav = state.nav;
+    if (!nav) return;
+    state.nav = null;
+    if (nav.watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(nav.watchId);
+    if (nav.simTimer) clearInterval(nav.simTimer);
+    if (nav.wakeLock) { try { nav.wakeLock.release(); } catch (e) {} }
+    document.body.classList.remove("nav");
+    navHud.hidden = true; navExit.hidden = true; navRecenter.hidden = true;
+    redrawMap();
+    positionFabs();
+    fitToFocused(true);   // fitBounds resets bearing/pitch to 0
+  }
+
+  function onNavFix(lat, lon) {
+    var nav = state.nav;
+    if (!nav || nav.arrived) return;
+    var bbox = state.config && state.config.bbox;
+    if (bbox && !(bbox[0] <= lon && lon <= bbox[2] && bbox[1] <= lat && lat <= bbox[3])) {
+      navStatusMsg("You've left the covered area.");
+      return;
+    }
+    var s = snapToRoute(nav.geom, lat, lon, nav.lastSegIdx);
+    nav.snapped = s.snapped;
+    nav.lastSegIdx = s.segIdx;
+    nav.progressM = s.progressM;
+    nav.residualM = s.residualM;
+    nav.heading = navBearing(nav.geom, s.segIdx, nav.heading);
+    setNavHud(nav.geom.total - s.progressM);
+    handleOffRoute(lat, lon, s);
+    handleArrival(s);
+    navCamera(false);
+    redrawMap();
+  }
+
+  function navCamera(force) {
+    var nav = state.nav;
+    if (!nav || !nav.follow || !nav.snapped || !map) return;
+    var now = Date.now();
+    if (!force && now - nav.lastCamAt < NAV_CAM_MS) return;
+    nav.lastCamAt = now;
+    map.easeTo({
+      center: nav.snapped, bearing: nav.heading || 0,
+      zoom: NAV_ZOOM, pitch: NAV_PITCH, duration: 700,
+      // puck rides the lower third so the road ahead fills the screen
+      offset: [0, Math.round(window.innerHeight * 0.18)],
+    });
+  }
+
+  // Off-route / arrival: indicator only for now (auto-reroute lands next).
+  function handleOffRoute(lat, lon, s) {
+    var nav = state.nav;
+    if (s.residualM > OFFROUTE_M) {
+      nav.offCount++;
+      navStatusMsg("Off route");
+    } else {
+      nav.offCount = 0;
+      if (!nav.rerouting) navStatusMsg(null);
+    }
+  }
+
+  function handleArrival(s) {}
+
+  function acquireWakeLock() {
+    if (!("wakeLock" in navigator)) return;
+    navigator.wakeLock.request("screen").then(function (wl) {
+      if (state.nav) state.nav.wakeLock = wl;
+      else { try { wl.release(); } catch (e) {} }
+    }).catch(function () {});
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (state.nav && document.visibilityState === "visible") acquireWakeLock();
+  });
+
+  navExit.addEventListener("click", function () { exitNav(); });
+  navRecenter.addEventListener("click", function () {
+    if (!state.nav) return;
+    state.nav.follow = true;
+    navRecenter.hidden = true;
+    navCamera(true);
+  });
+
+  // --- sim harness (?sim=1) -----------------------------------------------
+  // Deterministic fake fixes along the focused route at walking speed with
+  // mild GPS noise; drivable from the console / Playwright via __hpSim.
+  // Inert without the flag — real navigation uses watchPosition.
+  function simStart() {
+    var nav = state.nav;
+    var sim = nav.sim = { t: 0, speed: 1.4, drift: false, paused: false, seed: 42 };
+    function rand() {   // LCG → [-1, 1)
+      sim.seed = (sim.seed * 1664525 + 1013904223) >>> 0;
+      return sim.seed / 2147483648 - 1;
+    }
+    nav.simTimer = setInterval(function () {
+      if (!state.nav || state.nav.sim !== sim || sim.paused) return;
+      sim.t = Math.min(sim.t + sim.speed, state.nav.geom.total);
+      var p = simPointAt(state.nav.geom, sim.t, sim.drift ? 60 : 0, rand);
+      onNavFix(p[1], p[0]);
+    }, 1000);
+  }
+
+  function simPointAt(geom, distM, driftM, rand) {
+    var i = 1;
+    while (i < geom.cum.length - 1 && geom.cum[i] < distM) i++;
+    var a = geom.xy[i - 1], b = geom.xy[i];
+    var seg = geom.cum[i] - geom.cum[i - 1] || 1;
+    var t = (distM - geom.cum[i - 1]) / seg;
+    var vx = b[0] - a[0], vy = b[1] - a[1];
+    var L = Math.sqrt(vx * vx + vy * vy) || 1;
+    var x = a[0] + t * vx + (-vy / L) * driftM + rand() * 4;
+    var y = a[1] + t * vy + (vx / L) * driftM + rand() * 4;
+    return [geom.lon0 + x / geom.kx, geom.lat0 + y / geom.ky];
+  }
+
+  window.__hpSim = {
+    speed: function (mps) { if (state.nav && state.nav.sim) state.nav.sim.speed = mps; },
+    drift: function (on) { if (state.nav && state.nav.sim) state.nav.sim.drift = !!on; },
+    jumpTo: function (frac) {
+      if (state.nav && state.nav.sim) state.nav.sim.t = state.nav.geom.total * frac;
+    },
+    pause: function (p) { if (state.nav && state.nav.sim) state.nav.sim.paused = p !== false; },
+  };
+
+  window.__hpNav = {
+    geom: navGeom, snap: snapToRoute, bearing: navBearing,
+    start: startNav, exit: exitNav,
+    state: function () {
+      var nav = state.nav;
+      return nav && { progressM: nav.progressM, residualM: nav.residualM,
+                      heading: nav.heading, snapped: nav.snapped,
+                      follow: nav.follow, arrived: nav.arrived,
+                      rerouting: nav.rerouting, offCount: nav.offCount };
+    },
+  };
 
   // Test/dev hook: inject a routes payload as if a search had resolved — the
   // checkpoint scripts (and offline dev) can't reach the geocoders, so they

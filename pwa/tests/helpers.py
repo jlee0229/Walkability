@@ -45,6 +45,32 @@ def wait_for_app(page):
     page.wait_for_function("!!window.__hpMap")
 
 
+# The sandbox proxy can't reach the remote PMTiles/glyph hosts, and a failed
+# vector source keeps MapLibre's "load" from ever firing — which blocks the
+# app's route layers. Swapping the config's basemap for a local minimal style
+# lets "load" fire so the GeoJSON layer stack renders and can be asserted on.
+MINIMAL_STYLE = {
+    "version": 8,
+    "sources": {},
+    "layers": [{"id": "bg", "type": "background",
+                "paint": {"background-color": "#e8e2d4"}}],
+}
+
+
+def stub_basemap(page):
+    def _cfg(route):
+        cfg = route.fetch().json()
+        cfg["style"] = {"type": "url", "url": "/teststyle.json"}
+        route.fulfill(json=cfg)
+    page.route("**/api/config*", _cfg)
+    page.route("**/teststyle.json", lambda r: r.fulfill(json=MINIMAL_STYLE))
+
+
+def wait_for_map_load(page):
+    """Wait for the app's route layers (added on the map 'load' event)."""
+    page.wait_for_function("window.__hpMap && !!window.__hpMap.getSource('routes')")
+
+
 def fetch_routes(page, olat, olon, dlat, dlon, alpha=2.5, area="boston"):
     """Fetch routes from the local API inside the page (same-origin)."""
     qs = f"olat={olat}&olon={olon}&dlat={dlat}&dlon={dlon}&alpha={alpha}&area={area}"
