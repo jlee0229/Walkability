@@ -602,6 +602,105 @@
   locBtn.addEventListener("click", function () { requestLocation(locBtn, false); });
   $("fabLocate").addEventListener("click", function () { requestLocation($("fabLocate"), true); });
 
+  // ------------------------------------------------------------- navigation
+  // Follow-me walking mode geometry. A route's polyline is projected once into
+  // a local equirectangular meters frame anchored at the route start, giving
+  // per-vertex coords, cumulative distances, and per-segment bearings. Fixes
+  // snap to the polyline with a windowed nearest-segment search so out-and-back
+  // corridors can't grab the wrong leg.
+  var M_PER_DEG_LAT = 110540, M_PER_DEG_LON = 111320;
+  var SNAP_WINDOW_SEGS = 30;   // segments searched around the last match
+  var SNAP_RESCAN_M = 50;      // windowed residual beyond this → full rescan
+  var BEARING_SMOOTH = 0.35;   // per-fix blend toward the segment bearing
+
+  function navGeom(route) {
+    if (route._nav) return route._nav;
+    var pts = fullCoords(route);
+    var lon0 = pts[0][0], lat0 = pts[0][1];
+    var kx = M_PER_DEG_LON * Math.cos(lat0 * Math.PI / 180), ky = M_PER_DEG_LAT;
+    var xy = new Array(pts.length), cum = new Array(pts.length);
+    var brg = new Array(Math.max(0, pts.length - 1));
+    var d = 0;
+    for (var i = 0; i < pts.length; i++) {
+      xy[i] = [(pts[i][0] - lon0) * kx, (pts[i][1] - lat0) * ky];
+      if (i > 0) {
+        var dx = xy[i][0] - xy[i - 1][0], dy = xy[i][1] - xy[i - 1][1];
+        d += Math.sqrt(dx * dx + dy * dy);
+        brg[i - 1] = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+      }
+      cum[i] = d;
+    }
+    route._nav = { pts: pts, xy: xy, cum: cum, brg: brg, total: d,
+                   lon0: lon0, lat0: lat0, kx: kx, ky: ky };
+    return route._nav;
+  }
+
+  function snapToRoute(geom, lat, lon, lastSegIdx) {
+    var px = (lon - geom.lon0) * geom.kx, py = (lat - geom.lat0) * geom.ky;
+    function scan(from, to) {
+      var best = null;
+      for (var i = from; i < to; i++) {
+        var a = geom.xy[i], b = geom.xy[i + 1];
+        var vx = b[0] - a[0], vy = b[1] - a[1];
+        var len2 = vx * vx + vy * vy;
+        var t = len2 ? ((px - a[0]) * vx + (py - a[1]) * vy) / len2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        var cx = a[0] + t * vx, cy = a[1] + t * vy;
+        var dx = px - cx, dy = py - cy;
+        var d2 = dx * dx + dy * dy;
+        if (!best || d2 < best.d2) best = { d2: d2, segIdx: i, t: t, cx: cx, cy: cy };
+      }
+      return best;
+    }
+    var n = geom.xy.length - 1;
+    var best = null;
+    if (lastSegIdx != null) {
+      best = scan(Math.max(0, lastSegIdx - SNAP_WINDOW_SEGS),
+                  Math.min(n, lastSegIdx + SNAP_WINDOW_SEGS + 1));
+      if (best && Math.sqrt(best.d2) > SNAP_RESCAN_M) best = null;
+    }
+    if (!best) best = scan(0, n);
+    var segLen = geom.cum[best.segIdx + 1] - geom.cum[best.segIdx];
+    return {
+      segIdx: best.segIdx, t: best.t,
+      snapped: [geom.lon0 + best.cx / geom.kx, geom.lat0 + best.cy / geom.ky],
+      progressM: geom.cum[best.segIdx] + best.t * segLen,
+      residualM: Math.sqrt(best.d2),
+    };
+  }
+
+  // The one pluggable heading source (a device-compass experiment would only
+  // replace this): the current segment's bearing, blended from the previous
+  // heading along the shortest angular path so the camera doesn't snap at
+  // polyline vertices.
+  function navBearing(geom, segIdx, prevHeading) {
+    var target = geom.brg[segIdx] != null ? geom.brg[segIdx] : (prevHeading || 0);
+    if (prevHeading == null) return target;
+    var delta = ((target - prevHeading + 540) % 360) - 180;
+    return (prevHeading + delta * BEARING_SMOOTH + 360) % 360;
+  }
+
+  window.__hpNav = { geom: navGeom, snap: snapToRoute, bearing: navBearing };
+
+  // Test/dev hook: inject a routes payload as if a search had resolved — the
+  // checkpoint scripts (and offline dev) can't reach the geocoders, so they
+  // fetch /api/route themselves and hand the result over here.
+  window.__hpTest = {
+    loadRoutes: function (data, origin, dest) {
+      state.origin = origin || null;
+      state.dest = dest || null;
+      state.routes = data.routes;
+      state.focus = 0;
+      state.segmented = false;
+      state.detailOpen = false;
+      renderCards();
+      cardsEl.scrollLeft = 0;
+      redrawMap();
+      collapseTopbar(true);
+      requestAnimationFrame(function () { fitToFocused(false); });
+    },
+  };
+
   // ------------------------------------------------------------------ boot
   // The active city comes from ?area= (a picker switch), else the last choice
   // (localStorage — survives standalone PWA launches, whose start_url has no
